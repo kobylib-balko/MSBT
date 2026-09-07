@@ -15,7 +15,7 @@ from typing import BinaryIO, Optional, Union
 
 import pandas as pd
 
-from msbt.importers.filename import parse_trade_filename
+from msbt.importers.filename import resolve_file_meta
 from msbt.models.trade import Trade, TradeStatus
 
 REQUIRED_COLUMNS = [
@@ -51,18 +51,20 @@ def _normalize_header(h: str) -> str:
 
 def _read_dataframe(source: Union[PathLike, BinaryIO, bytes], filename: str) -> pd.DataFrame:
     name = Path(filename).name.lower()
+    is_excel = name.endswith(".xlsx") or name.endswith(".xls")
+    # Default to CSV when extension is missing (pattern allows bare ..._YYYY-MM-DD)
     if isinstance(source, (str, Path)):
         path = Path(source)
-        if name.endswith(".csv") or path.suffix.lower() == ".csv":
-            return pd.read_csv(path, encoding="utf-8-sig")
-        return pd.read_excel(path)
+        if is_excel or path.suffix.lower() in {".xlsx", ".xls"}:
+            return pd.read_excel(path)
+        return pd.read_csv(path, encoding="utf-8-sig")
     if isinstance(source, bytes):
         bio = BytesIO(source)
     else:
         bio = source  # type: ignore[assignment]
-    if name.endswith(".csv"):
-        return pd.read_csv(bio, encoding="utf-8-sig")
-    return pd.read_excel(bio)
+    if is_excel:
+        return pd.read_excel(bio)
+    return pd.read_csv(bio, encoding="utf-8-sig")
 
 
 def _parse_date(val) -> Optional[date]:
@@ -118,8 +120,16 @@ def import_trade_file(
     filename: Optional[str] = None,
     *,
     trade_id_prefix: Optional[str] = None,
+    symbol: Optional[str] = None,
+    strategy: Optional[str] = None,
+    exchange: Optional[str] = None,
 ) -> tuple[list[Trade], list[dict]]:
-    """Import one file. Returns (trades including invalids, validation rows)."""
+    """Import one file. Returns (trades including invalids, validation rows).
+
+    Filename pattern is optional. If it does not match
+    ``{strategy}_{exchange}_{symbol}_{YYYY-MM-DD}.ext``, pass ``symbol``
+    (and optionally strategy/exchange) explicitly.
+    """
     if filename is None:
         if isinstance(source, (str, Path)):
             filename = Path(source).name
@@ -130,7 +140,9 @@ def import_trade_file(
     trades: list[Trade] = []
 
     try:
-        meta = parse_trade_filename(filename)
+        meta = resolve_file_meta(
+            filename, symbol=symbol, strategy=strategy, exchange=exchange
+        )
     except ValueError as e:
         validation_rows.append(
             {
