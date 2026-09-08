@@ -1,4 +1,4 @@
-"""Simulation configuration (Phase 1 locked economics)."""
+"""Simulation configuration (Phase 1 locked economics + Phase 2 market/risk)."""
 
 from __future__ import annotations
 
@@ -12,14 +12,15 @@ class EntryPriority(str, Enum):
     HIGHEST_RETURN_PER_BAR = "highest_return_per_bar"
     HIGHEST_WIN_RATE = "highest_win_rate"
     HIGHEST_AVG_TRADE_RETURN = "highest_avg_trade_return"
-    # Alias used in acceptance / docs
     HISTORICAL_AVG_RETURN = "historical_avg_return"
 
 
-# Map alias to canonical metric
 PRIORITY_ALIASES = {
     EntryPriority.HISTORICAL_AVG_RETURN: EntryPriority.HIGHEST_AVG_TRADE_RETURN,
 }
+
+VALID_OPEN_VALUATION_MODES = frozenset({"cost_basis", "source", "market"})
+VALID_YAHOO_ADJUSTMENT = frozenset({"adjusted", "unadjusted"})
 
 
 @dataclass
@@ -41,8 +42,14 @@ class SimulationConfig:
     max_open_positions: Optional[int] = None
     min_allocation_cash: float = 0.0
     fractional_shares: bool = True
-    # Phase 1 open valuation: cost basis (primary)
-    open_valuation_mode: str = "cost_basis"  # cost_basis | source
+    open_valuation_mode: str = "cost_basis"
+    risk_free_rate: float = 0.0
+    sortino_target: float = 0.0
+    discrepancy_threshold_pct: float = 0.02
+    yahoo_price_adjustment: str = "adjusted"
+    valuation_date: Optional[date] = None
+    ticker_map: dict[str, str] = field(default_factory=dict)
+    benchmark_ticker: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.buy_pct_of_equity <= 0 or self.buy_pct_of_equity > 1:
@@ -52,7 +59,15 @@ class SimulationConfig:
         if self.initial_capital <= 0:
             raise ValueError("initial_capital must be positive")
         if self.allow_leverage:
-            raise ValueError("Phase 1: allow_leverage must be False")
+            raise ValueError("Phase 1/2: allow_leverage must be False")
+        if self.open_valuation_mode not in VALID_OPEN_VALUATION_MODES:
+            raise ValueError(
+                f"open_valuation_mode must be one of {sorted(VALID_OPEN_VALUATION_MODES)}"
+            )
+        if self.yahoo_price_adjustment not in VALID_YAHOO_ADJUSTMENT:
+            raise ValueError(
+                f"yahoo_price_adjustment must be one of {sorted(VALID_YAHOO_ADJUSTMENT)}"
+            )
 
     def resolved_priority(self) -> EntryPriority:
         try:
@@ -63,7 +78,7 @@ class SimulationConfig:
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
-        for k in ("start_date", "end_date"):
-            if d[k] is not None:
+        for k in ("start_date", "end_date", "valuation_date"):
+            if d.get(k) is not None:
                 d[k] = d[k].isoformat()
         return d

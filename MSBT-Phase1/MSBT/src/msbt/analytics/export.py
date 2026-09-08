@@ -34,10 +34,30 @@ def export_results_excel(result: SimulationResult, path: PathLike) -> Path:
     symbol = pd.DataFrame(result.symbol_metrics)
     source = pd.DataFrame(result.source_metrics)
     validation = pd.DataFrame(result.validation_report)
+    daily = pd.DataFrame([s.to_dict() for s in result.daily_mtm_timeseries])
+    risk_rows = []
+    if result.risk_metrics is not None:
+        risk_rows.append(result.risk_metrics.to_dict())
+    risk_df = pd.DataFrame(risk_rows)
+    open_val = pd.DataFrame(result.open_valuations)
+    md_report = pd.DataFrame(result.market_data_report)
+    bench_df = pd.DataFrame(
+        [result.benchmark_metrics.to_dict()] if result.benchmark_metrics is not None else []
+    )
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         summary.to_excel(writer, sheet_name="Summary", index=False)
         ledger.to_excel(writer, sheet_name="Ledger", index=False)
         equity.to_excel(writer, sheet_name="EquityCurve", index=False)
+        if not daily.empty:
+            daily.to_excel(writer, sheet_name="DailyMTM", index=False)
+        if not risk_df.empty:
+            risk_df.to_excel(writer, sheet_name="Risk", index=False)
+        if not open_val.empty:
+            open_val.to_excel(writer, sheet_name="OpenValuations", index=False)
+        if not bench_df.empty:
+            bench_df.to_excel(writer, sheet_name="Benchmark", index=False)
+        if not md_report.empty:
+            md_report.to_excel(writer, sheet_name="MarketData", index=False)
         symbol.to_excel(writer, sheet_name="BySymbol", index=False)
         source.to_excel(writer, sheet_name="BySource", index=False)
         if not validation.empty:

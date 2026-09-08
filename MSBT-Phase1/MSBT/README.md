@@ -1,13 +1,14 @@
-# Multi-Symbol Portfolio Backtester (MSBT) — Phase 1
+# Multi-Symbol Portfolio Backtester (MSBT) — Phase 2
 
-Event-based portfolio simulation: upload multiple trade CSVs, normalize, and simulate a shared-cash portfolio with overlaps. Does not sum trade returns.
+Event-based portfolio simulation: upload multiple trade CSVs, normalize, and simulate a shared-cash portfolio with overlaps. Does **not** sum trade returns.
 
-Phase 1 uses supplied Return % for closed-trade outcomes. No Yahoo Finance, no daily MTM Sharpe/Sortino, no React UI.
+**Phase 1:** supplied Return % for closed-trade outcomes; event equity curve.  
+**Phase 2:** optional `MarketDataProvider` (Yahoo via yfinance + disk cache, or synthetic fixtures) for daily MTM equity, open-position valuation, risk metrics (vol/Sharpe/Sortino/max DD), and optional benchmark.
 
 ## Return % convention
 
-Source files store percent points (e.g. 11.95 means +11.95%).
-Internally the engine converts to decimal: 11.95 -> 0.1195.
+Source files store percent points (e.g. 11.95 means +11.95%).  
+Internally the engine converts to decimal: 11.95 -> 0.1195.  
 Both Entry and Exit rows must agree on Return %.
 
 ## Filename convention
@@ -25,9 +26,8 @@ cd MSBT
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+# or: pip install -r requirements.txt && pip install -e .
 ```
-
-Or: `pip install -r requirements.txt && pip install -e .`
 
 ## Run tests
 
@@ -36,6 +36,8 @@ source .venv/bin/activate
 pytest -q
 ```
 
+Tests use **synthetic** market data only (no live Yahoo in CI).
+
 ## Run Streamlit UI
 
 ```bash
@@ -43,7 +45,8 @@ source .venv/bin/activate
 streamlit run app.py
 ```
 
-Flow: upload -> validate -> configure -> run -> results -> export Excel.
+Cloud-safe entrypoint: `app.py` inserts `src/` on `sys.path` and calls `main()`.  
+Toggle **Enable Phase 2 market data** for Yahoo daily MTM / risk / benchmark. Cache writes to `data/market_cache/` (or `/tmp/msbt_market_cache` if not writable).
 
 ## Engine API
 
@@ -51,6 +54,7 @@ Flow: upload -> validate -> configure -> run -> results -> export Excel.
 from msbt import SimulationConfig, run_simulation
 from msbt.importers import import_trade_files
 from msbt.validation import validate_trades
+from msbt.market_data import SyntheticMarketDataProvider, YahooFinanceProvider
 
 trades, issues = import_trade_files(["fixtures/TripleStrategy_AMEX_SAMPLE_2026-09-05.csv"])
 trades, report = validate_trades(trades, prior_issues=issues, files_uploaded=1)
@@ -59,59 +63,54 @@ config = SimulationConfig(
     buy_pct_of_equity=0.05,
     max_pct_per_symbol=0.20,
     allow_leverage=False,
+    open_valuation_mode="market",       # market | source | cost_basis
+    yahoo_price_adjustment="adjusted",  # adjusted | unadjusted
+    risk_free_rate=0.0,
+    sortino_target=0.0,
+    discrepancy_threshold_pct=0.02,
 )
-result = run_simulation(
-    trades=[t for t in trades if t.is_valid_for_sim],
-    config=config,
-    market_data=None,
-)
+# Phase 1 behavior:
+result = run_simulation(trades=[t for t in trades if t.is_valid_for_sim], config=config, market_data=None)
+# Phase 2:
+# provider = YahooFinanceProvider()  # or SyntheticMarketDataProvider(...)
+# result = run_simulation(..., market_data=provider)
 print(result.performance_metrics.final_equity)
+print(result.daily_mtm_timeseries[:3])
+print(result.risk_metrics)
 ```
 
-## Locked economics (Phase 1)
+## Locked economics
 
-- equity_for_sizing is frozen after exits and before entries on timestamp T
-- gross_exit_value = cost_basis * (1 + return_pct)
-- Fees/slippage are cash costs; they do not rewrite return_pct
+- `equity_for_sizing` is frozen after exits and before entries on timestamp T
+- `gross_exit_value = cost_basis * (1 + return_pct)` — Yahoo never rewrites closed P&L
+- Fees/slippage are cash costs; they do not rewrite `return_pct`
 - Same-timestamp: exits before entries
-- Look-ahead ban on priority metrics (sell_date < decision_timestamp)
+- Look-ahead ban on priority metrics (`sell_date < decision_timestamp`); future market prices do not affect selection
 - Cash rounded to 2 decimals after each movement
-- allow_leverage=False
-- Open positions valued at cost basis in the primary view
+- `allow_leverage=False`
+- Open positions: Phase 1 at cost basis; Phase 2 `market` / `source` / `cost_basis`
+- Daily MTM: last available Close on/before date (no interpolation/forward-fill fabrication); gaps reported
 
 Note: Average trade return is not equal to portfolio return (sizing, overlap, cash constraints, rejects).
-
-## Push to GitHub
-
-```bash
-cd MSBT
-git init
-git add .
-git commit -m "Phase 1: multi-symbol portfolio backtester"
-git branch -M main
-git remote add origin https://github.com/kobylib-balko/MSBT.git
-git push -u origin main
-```
 
 ## Layout
 
 ```
 MSBT/
   src/msbt/
-    importers/ validation/ models/ simulation/ analytics/ streamlit_app/
+    importers/ validation/ models/ simulation/
+    market_data/   # Phase 2 providers + cache
+    analytics/     # export, risk, benchmark
+    streamlit_app/
   tests/
   fixtures/
+  data/market_cache/
   app.py
   pyproject.toml
   requirements.txt
 ```
 
-## Phase 2+ (not included)
-
-Yahoo MTM, Sharpe/Sortino, React UI are deferred.
-
 ## Caveats
 
-- **Acceptance Example 2 prompt text** claims GOOG is partially filled for 41800 after two 31350 fills at buy 30%. That is arithmetically inconsistent (remaining cash 41800 > target 31350). The engine follows locked sizing rules: GOOG also gets a full 31350; cash left 10450; end-of-day equity still 104500. A separate test covers same-day priority + partial with buy 40%.
-- Phase 1 open positions are marked at **cost basis** (unrealized = 0 in the primary view).
+- **Acceptance Example 2 prompt text** claims GOOG is partially filled for 41800 after two 31350 fills at buy 30%. That is arithmetically inconsistent. The engine follows locked sizing rules (see Phase 1 tests).
 - Return % in CSVs is percent points; conversion to decimal is documented in code and README.

@@ -114,13 +114,14 @@ def _make_rejected(
 def run_simulation(
     trades: list[Trade],
     config: SimulationConfig,
-    market_data: Any = None,  # Phase 2 only; ignored in Phase 1
+    market_data: Any = None,  # Phase 2: daily MTM when provided
 ) -> SimulationResult:
-    """Run Phase 1 event-based capital simulation.
+    """Run event-based capital simulation.
 
-    market_data is accepted for API compatibility; Phase 1 does not use it.
+    When market_data is None: Phase 1 event equity curve only.
+    When market_data is provided: also build daily MTM timeseries + risk
+    (closed-trade P&L still uses Return %; market prices do not affect selection).
     """
-    _ = market_data  # Phase 1: unused
 
     sim_id = str(uuid.uuid4())
     eligible = [t for t in trades if t.is_valid_for_sim]
@@ -432,7 +433,7 @@ def run_simulation(
     symbol_metrics = _breakdown_by(trade_results, key="symbol")
     source_metrics = _breakdown_by(trade_results, key="source_file")
 
-    return SimulationResult(
+    result = SimulationResult(
         portfolio_timeseries=snapshots,
         trade_results=trade_results,
         performance_metrics=perf,
@@ -443,6 +444,71 @@ def run_simulation(
         validation_report=[],
         simulation_id=sim_id,
     )
+
+    if market_data is not None:
+        from msbt.simulation.mtm import build_daily_mtm
+
+        daily, risk, md_report, open_vals, affected, benchmark = build_daily_mtm(
+            trades=trades,
+            config=config,
+            market_data=market_data,
+            event_result=result,
+        )
+        result.daily_mtm_timeseries = daily
+        result.risk_metrics = risk
+        result.market_data_report = md_report
+        result.open_valuations = open_vals
+        result.affected_dates = affected
+        result.benchmark_metrics = benchmark
+
+        # Enrich open TradeResults with valuation fields (do not touch closed P&L)
+        ov_by_id = {o["trade_id"]: o for o in open_vals}
+        for tr in result.trade_results:
+            if not tr.is_open:
+                continue
+            ov = ov_by_id.get(tr.trade_id)
+            if not ov:
+                continue
+            tr.market_price = ov.get("market_price")
+            tr.market_value = ov.get("market_value")
+            tr.unrealized_pnl = ov.get("unrealized_pnl")
+            tr.market_return = ov.get("market_return")
+            tr.source_return_ref = ov.get("source_return_ref")
+            tr.discrepancy_flag = bool(ov.get("discrepancy_flag"))
+            tr.discrepancy_detail = ov.get("discrepancy_detail")
+            tr.valuation_notes = ov.get("notes")
+
+        if risk is not None:
+            result.performance_metrics.ann_volatility = risk.ann_volatility
+            result.performance_metrics.sharpe = risk.sharpe
+            result.performance_metrics.sortino = risk.sortino
+            result.performance_metrics.max_drawdown = risk.max_drawdown
+            result.performance_metrics.max_drawdown_duration_days = (
+                risk.max_drawdown_duration_days
+            )
+            result.performance_metrics.risk_unavailable = dict(risk.unavailable_reasons)
+            if daily:
+                result.performance_metrics.final_equity = daily[-1].equity
+                result.performance_metrics.equity_including_opens = daily[-1].equity
+                result.performance_metrics.unrealized_pnl = daily[-1].unrealized_pnl or 0.0
+                result.performance_metrics.absolute_pnl = money(
+                    daily[-1].equity - money(config.initial_capital)
+                )
+                result.performance_metrics.total_return_pct = (
+                    (daily[-1].equity - money(config.initial_capital))
+                    / money(config.initial_capital)
+                    if config.initial_capital
+                    else 0.0
+                )
+            # Sum unrealized from open valuations when available
+            if open_vals:
+                u = sum(
+                    (o.get("unrealized_pnl") or 0.0) for o in open_vals
+                    if o.get("unrealized_pnl") is not None
+                )
+                result.performance_metrics.unrealized_pnl = money(u)
+
+    return result
 
 
 def _build_performance(

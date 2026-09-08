@@ -1,4 +1,4 @@
-"""Simulation result models."""
+"""Simulation result models (Phase 1 + Phase 2 extensions)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from datetime import date
 from typing import Any, Optional
 
 
-# Status / rejection reason constants
 ACCEPTED = "Accepted"
 PARTIAL_INSUFFICIENT = "Partially Filled - Insufficient Capital"
 REJECTED_INSUFFICIENT = "Rejected - Insufficient Capital"
@@ -28,7 +27,7 @@ class TradeResult:
     source_trade_number: int
     buy_date: date
     sell_date: Optional[date]
-    gross_return: Optional[float]  # decimal
+    gross_return: Optional[float]
     net_return: Optional[float]
     allocated_capital: float
     qty: float
@@ -45,9 +44,17 @@ class TradeResult:
     is_open: bool = False
     buy_price: Optional[float] = None
     sell_price: Optional[float] = None
+    market_price: Optional[float] = None
+    market_value: Optional[float] = None
+    unrealized_pnl: Optional[float] = None
+    market_return: Optional[float] = None
+    source_return_ref: Optional[float] = None
+    discrepancy_flag: bool = False
+    discrepancy_detail: Optional[str] = None
+    valuation_notes: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "Trade ID": self.trade_id,
             "Symbol": self.symbol,
             "Strategy": self.strategy,
@@ -74,6 +81,20 @@ class TradeResult:
             "Buy price": self.buy_price,
             "Sell price": self.sell_price,
         }
+        if self.market_price is not None or self.is_open:
+            d.update(
+                {
+                    "Market price": self.market_price,
+                    "Market value": self.market_value,
+                    "Unrealized PnL": self.unrealized_pnl,
+                    "Market return": self.market_return,
+                    "Source return ref": self.source_return_ref,
+                    "Discrepancy flag": self.discrepancy_flag,
+                    "Discrepancy detail": self.discrepancy_detail,
+                    "Valuation notes": self.valuation_notes,
+                }
+            )
+        return d
 
 
 @dataclass
@@ -85,9 +106,13 @@ class EquitySnapshot:
     open_positions: int
     exposure_pct: float
     cumulative_return: float
+    market_value_opens: Optional[float] = None
+    unrealized_pnl: Optional[float] = None
+    missing_price_symbols: tuple[str, ...] = ()
+    is_daily_mtm: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "Date": self.timestamp.isoformat(),
             "Equity": self.equity,
             "Cash": self.cash,
@@ -96,6 +121,12 @@ class EquitySnapshot:
             "Exposure %": self.exposure_pct,
             "Cumulative return": self.cumulative_return,
         }
+        if self.is_daily_mtm or self.market_value_opens is not None:
+            d["Market value opens"] = self.market_value_opens
+            d["Unrealized PnL"] = self.unrealized_pnl
+            d["Missing price symbols"] = ",".join(self.missing_price_symbols)
+            d["Daily MTM"] = self.is_daily_mtm
+        return d
 
 
 @dataclass
@@ -105,9 +136,9 @@ class PerformanceSummary:
     absolute_pnl: float
     total_return_pct: float
     realized_pnl: float
-    unrealized_pnl: float  # Phase 1: 0 under cost-basis valuation
+    unrealized_pnl: float
     equity_including_opens: float
-    equity_realized_only: float  # cash + 0 for opens marked at cost → same as equity when cost basis
+    equity_realized_only: float
     candidates: int
     accepted: int
     partial: int
@@ -120,18 +151,24 @@ class PerformanceSummary:
     avg_holding_bars: Optional[float] = None
     median_holding_bars: Optional[float] = None
     note: str = (
-        "Average trade return ≠ portfolio return due to sizing, overlap, "
+        "Average trade return != portfolio return due to sizing, overlap, "
         "cash constraints, and rejects."
     )
+    ann_volatility: Optional[float] = None
+    sharpe: Optional[float] = None
+    sortino: Optional[float] = None
+    max_drawdown: Optional[float] = None
+    max_drawdown_duration_days: Optional[int] = None
+    risk_unavailable: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "Initial capital": self.initial_capital,
             "Final equity": self.final_equity,
             "Absolute P&L": self.absolute_pnl,
             "Total return %": self.total_return_pct,
             "Realized P&L": self.realized_pnl,
-            "Unrealized P&L (cost-basis view)": self.unrealized_pnl,
+            "Unrealized P&L": self.unrealized_pnl,
             "Equity including opens": self.equity_including_opens,
             "Equity realized-only view": self.equity_realized_only,
             "Candidates": self.candidates,
@@ -147,6 +184,18 @@ class PerformanceSummary:
             "Median holding bars": self.median_holding_bars,
             "Note": self.note,
         }
+        if self.ann_volatility is not None or self.risk_unavailable:
+            d.update(
+                {
+                    "Ann. volatility": self.ann_volatility,
+                    "Sharpe": self.sharpe,
+                    "Sortino": self.sortino,
+                    "Max drawdown": self.max_drawdown,
+                    "Max DD duration (days)": self.max_drawdown_duration_days,
+                    "Risk unavailable": self.risk_unavailable or None,
+                }
+            )
+        return d
 
 
 @dataclass
@@ -160,3 +209,9 @@ class SimulationResult:
     simulation_config: dict[str, Any]
     validation_report: list[dict[str, Any]] = field(default_factory=list)
     simulation_id: str = ""
+    daily_mtm_timeseries: list[EquitySnapshot] = field(default_factory=list)
+    risk_metrics: Optional[Any] = None
+    benchmark_metrics: Optional[Any] = None
+    market_data_report: list[dict[str, Any]] = field(default_factory=list)
+    open_valuations: list[dict[str, Any]] = field(default_factory=list)
+    affected_dates: list[str] = field(default_factory=list)
