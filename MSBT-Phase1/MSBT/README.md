@@ -1,9 +1,10 @@
-# Multi-Symbol Portfolio Backtester (MSBT) — Phase 2
+# Multi-Symbol Portfolio Backtester (MSBT) — Phase 3
 
 Event-based portfolio simulation: upload multiple trade CSVs, normalize, and simulate a shared-cash portfolio with overlaps. Does **not** sum trade returns.
 
 **Phase 1:** supplied Return % for closed-trade outcomes; event equity curve.  
-**Phase 2:** optional `MarketDataProvider` (Yahoo via yfinance + disk cache, or synthetic fixtures) for daily MTM equity, open-position valuation, risk metrics (vol/Sharpe/Sortino/max DD), and optional benchmark.
+**Phase 2:** optional `MarketDataProvider` (Yahoo via yfinance + disk cache, or synthetic fixtures) for daily MTM equity, open-position valuation, risk metrics (vol/Sharpe/Sortino/max DD), and optional benchmark.  
+**Phase 3:** parameter-grid scenarios, SQLite run history, and TradingView ingestion hooks (interfaces only — no live webhook).
 
 ## Return % convention
 
@@ -48,6 +49,10 @@ streamlit run app.py
 Cloud-safe entrypoint: `app.py` inserts `src/` on `sys.path` and calls `main()`.  
 Toggle **Enable Phase 2 market data** for Yahoo daily MTM / risk / benchmark. Cache writes to `data/market_cache/` (or `/tmp/msbt_market_cache` if not writable).
 
+After a single simulation, **Save this run** stores it in `data/runs.sqlite` (UTC timestamps; gitignored). The sidebar lists past runs (open, edit name/tags/notes, delete, compare 2+).
+
+**Parameter grid:** in Configuration, pick buy % values and entry-priority modes (optional fee/slippage/max-symbol axes), then **Run parameter grid**. Each cell is an independent `run_simulation` on the same normalized trades; the base trade list is not mutated. Comparison table includes params, final equity, return %, CAGR when the equity span allows it, max DD only when daily MTM exists (otherwise NA), accepted, and rejected. Download CSV from the UI. If market data is enabled, one provider object is reused across cells so Yahoo hits the disk cache.
+
 ## Engine API
 
 ```python
@@ -79,6 +84,34 @@ print(result.daily_mtm_timeseries[:3])
 print(result.risk_metrics)
 ```
 
+
+## Phase 3 — grid, history, TradingView
+
+```python
+from msbt.analytics.grid import run_parameter_grid
+from msbt.analytics.history import save_run, list_runs, get_run, compare_runs
+from msbt.ingestion.tradingview import import_symbol_list, map_strategy_names
+
+rows = run_parameter_grid(
+    trades,
+    config,
+    {
+        "buy_pct_of_equity": [0.05, 0.10, 0.15, 0.20],
+        "entry_priority": ["highest_avg_trade_return", "highest_win_rate"],
+    },
+    market_data=None,  # or a shared YahooFinanceProvider / synthetic provider
+)
+run_id = save_run(result, name="baseline", tags="demo", notes="5% buy")
+print(list_runs())
+print(compare_runs([run_id]))
+
+# Future hook only — not a live TradingView webhook:
+print(import_symbol_list("NASDAQ:AAPL, NYSE:IBM"))
+print(map_strategy_names("Triple", {"triple": "TripleStrategy"}))
+```
+
+History DB: `data/runs.sqlite` (or `/tmp/msbt_runs.sqlite` if the project data dir is not writable).
+
 ## Locked economics
 
 - `equity_for_sizing` is frozen after exits and before entries on timestamp T
@@ -100,11 +133,13 @@ MSBT/
   src/msbt/
     importers/ validation/ models/ simulation/
     market_data/   # Phase 2 providers + cache
-    analytics/     # export, risk, benchmark
+    analytics/     # export, risk, benchmark, grid, history
+    ingestion/     # TradingView hooks (interfaces only)
     streamlit_app/
   tests/
   fixtures/
   data/market_cache/
+  data/runs.sqlite     # created at runtime; gitignored
   app.py
   pyproject.toml
   requirements.txt

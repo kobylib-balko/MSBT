@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "msbt"
-version = "0.2.0"
-description = "Multi-Symbol Portfolio Backtester — Phase 2 daily MTM + risk"
+version = "0.3.0"
+description = "Multi-Symbol Portfolio Backtester — Phase 3 grid, history, TradingView hooks"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
