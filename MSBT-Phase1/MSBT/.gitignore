@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.DS_Store
+*.xlsx~
+.streamlit/secrets.toml
+
+# Streamlit agent skills (environment-specific symlinks)
+.agents/skills/developing-with-streamlit
+
+# Market data cache (keep directory, ignore contents)
+data/market_cache/**
+!data/market_cache/.gitkeep
+
+# Run history DB (Phase 3)
+data/runs.sqlite
+data/runs.sqlite-*
+data/history/**
+!data/history/.gitkeep
