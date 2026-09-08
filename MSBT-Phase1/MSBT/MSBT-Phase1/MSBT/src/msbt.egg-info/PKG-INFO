@@ -1,0 +1,130 @@
+Metadata-Version: 2.4
+Name: msbt
+Version: 0.1.0
+Summary: Multi-Symbol Portfolio Backtester — Phase 1 event-based capital simulation
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: pandas>=2.0
+Requires-Dist: openpyxl>=3.1
+Requires-Dist: streamlit>=1.28
+Requires-Dist: python-dateutil>=2.8
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+
+# Multi-Symbol Portfolio Backtester (MSBT) — Phase 1
+
+Event-based portfolio simulation: upload multiple trade CSVs, normalize, and simulate a shared-cash portfolio with overlaps. Does not sum trade returns.
+
+Phase 1 uses supplied Return % for closed-trade outcomes. No Yahoo Finance, no daily MTM Sharpe/Sortino, no React UI.
+
+## Return % convention
+
+Source files store percent points (e.g. 11.95 means +11.95%).
+Internally the engine converts to decimal: 11.95 -> 0.1195.
+Both Entry and Exit rows must agree on Return %.
+
+## Filename convention
+
+```
+{strategy}_{exchange}_{symbol}_{YYYY-MM-DD}.csv
+```
+
+Example: TripleStrategy_AMEX_IVV_2026-09-05.csv
+
+## Install
+
+```bash
+cd MSBT
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+Or: `pip install -r requirements.txt && pip install -e .`
+
+## Run tests
+
+```bash
+source .venv/bin/activate
+pytest -q
+```
+
+## Run Streamlit UI
+
+```bash
+source .venv/bin/activate
+streamlit run app.py
+```
+
+Flow: upload -> validate -> configure -> run -> results -> export Excel.
+
+## Engine API
+
+```python
+from msbt import SimulationConfig, run_simulation
+from msbt.importers import import_trade_files
+from msbt.validation import validate_trades
+
+trades, issues = import_trade_files(["fixtures/TripleStrategy_AMEX_SAMPLE_2026-09-05.csv"])
+trades, report = validate_trades(trades, prior_issues=issues, files_uploaded=1)
+config = SimulationConfig(
+    initial_capital=100_000,
+    buy_pct_of_equity=0.05,
+    max_pct_per_symbol=0.20,
+    allow_leverage=False,
+)
+result = run_simulation(
+    trades=[t for t in trades if t.is_valid_for_sim],
+    config=config,
+    market_data=None,
+)
+print(result.performance_metrics.final_equity)
+```
+
+## Locked economics (Phase 1)
+
+- equity_for_sizing is frozen after exits and before entries on timestamp T
+- gross_exit_value = cost_basis * (1 + return_pct)
+- Fees/slippage are cash costs; they do not rewrite return_pct
+- Same-timestamp: exits before entries
+- Look-ahead ban on priority metrics (sell_date < decision_timestamp)
+- Cash rounded to 2 decimals after each movement
+- allow_leverage=False
+- Open positions valued at cost basis in the primary view
+
+Note: Average trade return is not equal to portfolio return (sizing, overlap, cash constraints, rejects).
+
+## Push to GitHub
+
+```bash
+cd MSBT
+git init
+git add .
+git commit -m "Phase 1: multi-symbol portfolio backtester"
+git branch -M main
+git remote add origin https://github.com/kobylib-balko/MSBT.git
+git push -u origin main
+```
+
+## Layout
+
+```
+MSBT/
+  src/msbt/
+    importers/ validation/ models/ simulation/ analytics/ streamlit_app/
+  tests/
+  fixtures/
+  app.py
+  pyproject.toml
+  requirements.txt
+```
+
+## Phase 2+ (not included)
+
+Yahoo MTM, Sharpe/Sortino, React UI are deferred.
+
+## Caveats
+
+- **Acceptance Example 2 prompt text** claims GOOG is partially filled for 41800 after two 31350 fills at buy 30%. That is arithmetically inconsistent (remaining cash 41800 > target 31350). The engine follows locked sizing rules: GOOG also gets a full 31350; cash left 10450; end-of-day equity still 104500. A separate test covers same-day priority + partial with buy 40%.
+- Phase 1 open positions are marked at **cost basis** (unrealized = 0 in the primary view).
+- Return % in CSVs is percent points; conversion to decimal is documented in code and README.
