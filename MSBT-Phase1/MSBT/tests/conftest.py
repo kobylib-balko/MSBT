@@ -24,4 +24,5 @@ def acceptance1_config():
         allow_partial_fills=True,
         allow_multiple_positions_same_symbol=True,
         allow_leverage=False,
+        cash_earn_mode="none",
     )

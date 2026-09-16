@@ -1,4 +1,4 @@
-"""Streamlit UI: Phase 1 event sim, Phase 2 MTM, Phase 3 grid + history."""
+"""Streamlit UI: Phase 1–3 + UX backlog + Phase 2.5 cash earn."""
 
 from __future__ import annotations
 
@@ -26,6 +26,15 @@ from msbt.importers.csv_importer import import_trade_file
 from msbt.models.config import EntryPriority, SimulationConfig
 from msbt.simulation.engine import run_simulation
 from msbt.validation.validate import validate_trades
+
+BENCHMARK_PRESETS = [
+    ("S&P 500 (^GSPC)", "^GSPC"),
+    ("Nasdaq (^IXIC)", "^IXIC"),
+    ("BND", "BND"),
+    ("ACWI", "ACWI"),
+    ("SCHD", "SCHD"),
+    ("Custom…", "__custom__"),
+]
 
 
 def _df(data):
@@ -61,6 +70,239 @@ def _source_hash(uploaded) -> str:
         h.update(b"\0")
         h.update(uf.getvalue())
     return h.hexdigest()
+
+
+def _metric_or_na(value, pct: bool = False) -> str:
+    if value is None:
+        return "NA"
+    if pct:
+        return f"{value * 100:.2f}%"
+    if isinstance(value, float):
+        if abs(value) == float("inf"):
+            return "∞"
+        return f"{value:,.4f}"
+    return str(value)
+
+
+def _fmt_money(v) -> str:
+    if v is None:
+        return "n/a"
+    return f"{v:,.2f}"
+
+
+def _event_curve_cash_changed(snapshots) -> pd.DataFrame:
+    """Only first day + days where cash changed; Cumulative return in %."""
+    rows = []
+    prev_cash = None
+    for i, s in enumerate(snapshots):
+        d = s.to_dict()
+        if i == 0 or prev_cash is None or abs((s.cash or 0) - prev_cash) > 1e-9:
+            d["Cumulative return"] = (s.cumulative_return or 0.0) * 100.0
+            if "Exposure %" in d and d["Exposure %"] is not None:
+                d["Exposure %"] = d["Exposure %"] * 100.0
+            rows.append(d)
+        prev_cash = s.cash
+    return pd.DataFrame(rows)
+
+
+def _highlight_better(row_strategy, row_bench, higher_better: set[str], lower_better: set[str]):
+    """Return CSS styles for strategy vs benchmark side-by-side table."""
+    styles = []
+    for col in row_strategy.index:
+        styles.append("")
+    return styles
+
+
+def _benchmark_comparison_table(result) -> pd.DataFrame | None:
+    """Strategy vs benchmark side-by-side; metrics as display-ready values."""
+    bm = result.benchmark_metrics
+    pm = result.performance_metrics
+    rm = result.risk_metrics
+    if bm is None:
+        return None
+
+    def _pct(v):
+        return None if v is None else v * 100.0
+
+    strategy = {
+        "Total Return (%)": _pct(pm.total_return_pct),
+        "CAGR (%)": _pct(pm.cagr),
+        "Sharpe": rm.sharpe if rm else pm.sharpe,
+        "Sortino": rm.sortino if rm else pm.sortino,
+        "Max drawdown (%)": _pct(rm.max_drawdown if rm else pm.max_drawdown),
+        "Ann. vol (%)": _pct(rm.ann_volatility if rm else pm.ann_volatility),
+    }
+    bench = {
+        "Total Return (%)": _pct(bm.cumulative_return),
+        "CAGR (%)": _pct(bm.cagr),
+        "Sharpe": bm.sharpe,
+        "Sortino": bm.sortino,
+        "Max drawdown (%)": _pct(bm.max_drawdown),
+        "Ann. vol (%)": _pct(bm.ann_volatility),
+    }
+    df = pd.DataFrame(
+        {
+            "Metric": list(strategy.keys()),
+            "Strategy": list(strategy.values()),
+            f"Benchmark ({bm.ticker_or_name})": list(bench.values()),
+        }
+    )
+    return df
+
+
+def _style_benchmark_df(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
+    higher = {"Total Return (%)", "CAGR (%)", "Sharpe", "Sortino"}
+    lower = {"Max drawdown (%)", "Ann. vol (%)"}  # max DD is more negative = worse; lower abs better
+    # For max drawdown: values are negative fractions*100; "better" = higher (less negative).
+    # For ann vol: lower is better.
+
+    def _cell(s_val, b_val, metric):
+        if s_val is None or b_val is None or (isinstance(s_val, float) and pd.isna(s_val)):
+            return ""
+        if metric in higher:
+            if s_val > b_val:
+                return "background-color: #c6efce"
+            if b_val > s_val:
+                return "background-color: #c6efce"  # applied per-column below
+        if metric == "Ann. vol (%)":
+            if s_val < b_val:
+                return "background-color: #c6efce"
+        if metric == "Max drawdown (%)":
+            # less negative (higher) is better
+            if s_val > b_val:
+                return "background-color: #c6efce"
+        return ""
+
+    def style_strategy(col):
+        styles = []
+        for i, v in enumerate(col):
+            metric = df.loc[i, "Metric"]
+            b = df.iloc[i, 2]
+            if metric in higher and v is not None and b is not None and not pd.isna(v) and not pd.isna(b):
+                styles.append("background-color: #c6efce" if v > b else "")
+            elif metric == "Ann. vol (%)" and v is not None and b is not None and not pd.isna(v) and not pd.isna(b):
+                styles.append("background-color: #c6efce" if v < b else "")
+            elif metric == "Max drawdown (%)" and v is not None and b is not None and not pd.isna(v) and not pd.isna(b):
+                styles.append("background-color: #c6efce" if v > b else "")
+            else:
+                styles.append("")
+        return styles
+
+    def style_bench(col):
+        styles = []
+        for i, v in enumerate(col):
+            metric = df.loc[i, "Metric"]
+            s = df.iloc[i, 1]
+            if metric in higher and v is not None and s is not None and not pd.isna(v) and not pd.isna(s):
+                styles.append("background-color: #c6efce" if v > s else "")
+            elif metric == "Ann. vol (%)" and v is not None and s is not None and not pd.isna(v) and not pd.isna(s):
+                styles.append("background-color: #c6efce" if v < s else "")
+            elif metric == "Max drawdown (%)" and v is not None and s is not None and not pd.isna(v) and not pd.isna(s):
+                styles.append("background-color: #c6efce" if v > s else "")
+            else:
+                styles.append("")
+        return styles
+
+    styler = df.style.format(
+        {
+            "Strategy": lambda v: "n/a" if v is None or (isinstance(v, float) and pd.isna(v)) else f"{v:.4f}",
+            df.columns[2]: lambda v: "n/a" if v is None or (isinstance(v, float) and pd.isna(v)) else f"{v:.4f}",
+        }
+    )
+    styler = styler.apply(style_strategy, subset=["Strategy"])
+    styler = styler.apply(style_bench, subset=[df.columns[2]])
+    return styler
+
+
+def _ledger_df(result) -> pd.DataFrame:
+    """Hide rejected; Gross/Net return as %; Signal column."""
+    rows = []
+    for r in result.trade_results:
+        if r.rejection_reason:
+            continue
+        d = r.to_dict()
+        if d.get("Gross return") is not None:
+            d["Gross return"] = d["Gross return"] * 100.0
+        if d.get("Net return") is not None:
+            d["Net return"] = d["Net return"] * 100.0
+        if d.get("Market return") is not None:
+            d["Market return"] = d["Market return"] * 100.0
+        rows.append(d)
+    return pd.DataFrame(rows)
+
+
+def _grid_display(rows: list[dict]) -> pd.DataFrame:
+    df = pd.DataFrame(rows)
+    prefer = [
+        "scenario",
+        "buy_pct_of_equity",
+        "entry_priority",
+        "max_pct_per_symbol",
+        "entry_fee_pct",
+        "exit_fee_pct",
+        "slippage_pct",
+        "final_equity",
+        "return_pct",
+        "cagr",
+        "max_drawdown",
+        "accepted",
+        "rejected",
+        "partial",
+        "simulation_id",
+    ]
+    cols = [c for c in prefer if c in df.columns]
+    extra = [c for c in df.columns if c not in cols and c != "params"]
+    show = df[cols + extra].copy()
+    pct_cols = [
+        "buy_pct_of_equity",
+        "max_pct_per_symbol",
+        "entry_fee_pct",
+        "exit_fee_pct",
+        "slippage_pct",
+        "return_pct",
+        "cagr",
+        "max_drawdown",
+    ]
+    for col in pct_cols:
+        if col in show.columns:
+            show[col] = show[col].apply(
+                lambda v: None
+                if v is None or (isinstance(v, float) and pd.isna(v))
+                else (v * 100.0 if isinstance(v, (int, float)) else v)
+            )
+    return show
+
+
+def _style_grid_best(df: pd.DataFrame):
+    """Highlight best value per numeric column."""
+    higher_better = {"final_equity", "return_pct", "cagr", "accepted"}
+    lower_better = {"max_drawdown", "rejected", "entry_fee_pct", "exit_fee_pct", "slippage_pct"}
+    # max_drawdown displayed as % (negative): higher (less negative) is better
+
+    def apply_col(col: pd.Series):
+        name = col.name
+        styles = [""] * len(col)
+        numeric = pd.to_numeric(col, errors="coerce")
+        if numeric.notna().sum() == 0:
+            return styles
+        if name in higher_better or name == "max_drawdown":
+            best = numeric.max()
+            for i, v in enumerate(numeric):
+                if pd.notna(v) and abs(v - best) < 1e-12:
+                    styles[i] = "background-color: #c6efce"
+        elif name in lower_better:
+            best = numeric.min()
+            for i, v in enumerate(numeric):
+                if pd.notna(v) and abs(v - best) < 1e-12:
+                    styles[i] = "background-color: #c6efce"
+        return styles
+
+    styler = df.style
+    for c in df.columns:
+        if c in ("scenario", "entry_priority", "simulation_id", "params"):
+            continue
+        styler = styler.apply(apply_col, subset=[c])
+    return styler
 
 
 def _render_history_sidebar() -> None:
@@ -121,16 +363,6 @@ def _render_history_sidebar() -> None:
             if st.form_submit_button("Update notes"):
                 update_run_meta(selected[0], name, tags, notes)
                 st.success("Updated.")
-
-
-def _metric_or_na(value, pct: bool = False) -> str:
-    if value is None:
-        return "NA"
-    if pct:
-        return f"{value * 100:.2f}%"
-    if isinstance(value, float):
-        return f"{value:,.4f}"
-    return str(value)
 
 
 def _render_history_panels() -> None:
@@ -195,14 +427,65 @@ def _render_history_panels() -> None:
             _df(gdf)
 
 
+def _render_trading_portfolio_stats(result) -> None:
+    ts = result.trading_stats
+    ps = result.portfolio_stats
+    if ts is not None:
+        st.subheader("Trading stats")
+        c = st.columns(6)
+        c[0].metric("# Trades", ts.number_of_trades)
+        c[1].metric("Executed", ts.executed)
+        c[2].metric("Rejected", ts.rejected)
+        c[3].metric("Winning", ts.winning)
+        c[4].metric("Losing", ts.losing)
+        c[5].metric("Win rate", _metric_or_na(ts.win_rate, pct=True))
+        c2 = st.columns(6)
+        c2[0].metric("Avg win", _fmt_money(ts.avg_win))
+        c2[1].metric("Avg loss", _fmt_money(ts.avg_loss))
+        c2[2].metric("Largest win", _fmt_money(ts.largest_win))
+        c2[3].metric("Largest loss", _fmt_money(ts.largest_loss))
+        pf = ts.profit_factor
+        c2[4].metric(
+            "Profit factor",
+            "∞" if pf == float("inf") else _metric_or_na(pf),
+        )
+        c2[5].metric("Avg ret / bar", _metric_or_na(ts.avg_return_per_bar, pct=True))
+        c3 = st.columns(4)
+        c3[0].metric("Avg hold (bars)", _metric_or_na(ts.avg_holding_bars))
+        c3[1].metric("Median hold (bars)", _metric_or_na(ts.median_holding_bars))
+        c3[2].metric("Max consec wins", ts.max_consecutive_wins)
+        c3[3].metric("Max consec losses", ts.max_consecutive_losses)
+        st.caption(
+            f"Invested bars = {ts.invested_bars} ({ts.invested_bars_definition}). "
+            "Avg return per bar = portfolio total return / invested bars."
+        )
+
+    if ps is not None and ps.n_days:
+        st.subheader("Portfolio stats")
+        p = st.columns(5)
+        p[0].metric("Avg positions / day", _metric_or_na(ps.avg_positions_per_day))
+        p[1].metric("Max exposure", _metric_or_na(ps.max_exposure_pct, pct=True))
+        p[2].metric("Avg exposure", _metric_or_na(ps.avg_exposure_pct, pct=True))
+        p[3].metric("% time invested", _metric_or_na(ps.pct_time_invested, pct=True))
+        p[4].metric("% time in cash", _metric_or_na(ps.pct_time_in_cash, pct=True))
+        st.caption(f"From {ps.source} equity curve ({ps.n_days} days).")
+
+
 def _render_single_results(result) -> None:
     pm = result.performance_metrics
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Final equity", f"{pm.final_equity:,.2f}")
     m2.metric("Total return", f"{pm.total_return_pct * 100:.2f}%")
-    m3.metric("Accepted", pm.accepted)
-    m4.metric("Rejected", pm.rejected)
+    m3.metric("CAGR", _metric_or_na(pm.cagr, pct=True))
+    m4.metric("Accepted", pm.accepted)
+    m5.metric("Rejected", pm.rejected)
+    if pm.cash_interest_pnl:
+        st.caption(f"Cash interest P&L: {pm.cash_interest_pnl:,.2f}")
+    if result.cash_earn_notes:
+        st.caption(result.cash_earn_notes)
     st.info(pm.note)
+
+    _render_trading_portfolio_stats(result)
 
     if result.risk_metrics is not None:
         st.subheader("Risk metrics (daily MTM)")
@@ -235,9 +518,13 @@ def _render_single_results(result) -> None:
         if flagged:
             st.warning(f"{len(flagged)} open position(s) exceed discrepancy threshold.")
 
-    if result.benchmark_metrics is not None:
-        st.subheader("Benchmark")
-        _df(pd.DataFrame([result.benchmark_metrics.to_dict()]))
+    bdf = _benchmark_comparison_table(result)
+    if bdf is not None:
+        st.subheader("Benchmark (strategy vs benchmark)")
+        try:
+            st.dataframe(_style_benchmark_df(bdf), use_container_width=True)
+        except Exception:
+            _df(bdf)
 
     if result.market_data_report:
         with st.expander("Market data report / gaps"):
@@ -245,24 +532,27 @@ def _render_single_results(result) -> None:
             if result.affected_dates:
                 st.write("Affected valuation dates:", ", ".join(result.affected_dates[:40]))
 
-    st.write("Trade ledger")
-    _df(pd.DataFrame([r.to_dict() for r in result.trade_results]))
+    st.write("Trade ledger (executed only)")
+    ledger = _ledger_df(result)
+    _df(ledger)
 
-    st.write("Event equity curve")
-    curve = pd.DataFrame([s.to_dict() for s in result.portfolio_timeseries])
+    st.write("Event equity curve (first day + cash-change days)")
+    curve = _event_curve_cash_changed(result.portfolio_timeseries)
     _df(curve)
-    if not curve.empty:
+    if not curve.empty and "Date" in curve.columns and "Equity" in curve.columns:
         chart = curve.copy()
-        date_col = "Date" if "Date" in chart.columns else "timestamp"
-        if date_col in chart.columns:
-            chart[date_col] = chart[date_col].astype(str)
-            eq_col = "Equity" if "Equity" in chart.columns else "equity"
-            if eq_col in chart.columns:
-                st.line_chart(chart.set_index(date_col)[eq_col])
+        chart["Date"] = chart["Date"].astype(str)
+        st.line_chart(chart.set_index("Date")["Equity"])
 
+    # Single daily MTM chart (no duplicate table+chart pair of the same curve twice)
     if result.daily_mtm_timeseries:
         st.write("Daily MTM equity curve")
         mtm = pd.DataFrame([s.to_dict() for s in result.daily_mtm_timeseries])
+        if not mtm.empty and "Cumulative return" in mtm.columns:
+            mtm = mtm.copy()
+            mtm["Cumulative return"] = mtm["Cumulative return"] * 100.0
+        if not mtm.empty and "Exposure %" in mtm.columns:
+            mtm["Exposure %"] = mtm["Exposure %"] * 100.0
         _df(mtm)
         if not mtm.empty and "Date" in mtm.columns and "Equity" in mtm.columns:
             mtm_chart = mtm.copy()
@@ -301,42 +591,17 @@ def _render_single_results(result) -> None:
             st.code(traceback.format_exc())
 
 
-def _grid_display(rows: list[dict]) -> pd.DataFrame:
-    df = pd.DataFrame(rows)
-    prefer = [
-        "scenario",
-        "buy_pct_of_equity",
-        "entry_priority",
-        "max_pct_per_symbol",
-        "entry_fee_pct",
-        "exit_fee_pct",
-        "slippage_pct",
-        "final_equity",
-        "return_pct",
-        "cagr",
-        "max_drawdown",
-        "accepted",
-        "rejected",
-        "partial",
-        "simulation_id",
-    ]
-    cols = [c for c in prefer if c in df.columns]
-    extra = [c for c in df.columns if c not in cols and c != "params"]
-    show = df[cols + extra].copy()
-    for col in ("cagr", "max_drawdown"):
-        if col in show.columns:
-            show[col] = show[col].apply(lambda v: "NA" if v is None or (isinstance(v, float) and pd.isna(v)) else v)
-    return show
-
-
 def _render_grid_results(rows: list[dict], base_config: dict) -> None:
     st.subheader("Parameter grid")
     st.caption(
         "Each row is an independent simulation. Max DD is NA without daily MTM. "
-        "CAGR uses the equity span when dates differ."
+        "CAGR uses the equity span when dates differ. Percent params shown as %."
     )
     show = _grid_display(rows)
-    _df(show)
+    try:
+        st.dataframe(_style_grid_best(show), use_container_width=True)
+    except Exception:
+        _df(show)
     st.download_button(
         "Download grid CSV",
         show.to_csv(index=False).encode("utf-8"),
@@ -366,13 +631,9 @@ def _render_grid_results(rows: list[dict], base_config: dict) -> None:
             st.code(traceback.format_exc())
 
 
-def _flash(message: str) -> None:
-    st.session_state["flash"] = message
-
-
 def main() -> None:
-    st.set_page_config(page_title="MSBT Phase 3", layout="wide")
-    st.title("Multi-Symbol Portfolio Backtester — Phase 3")
+    st.set_page_config(page_title="MSBT 0.4", layout="wide")
+    st.title("Multi-Symbol Portfolio Backtester — 0.4")
     flash = st.session_state.pop("flash", None)
     if flash:
         st.success(flash)
@@ -380,7 +641,7 @@ def main() -> None:
     st.caption(
         "Event-based capital simulation using Return %. "
         "Optional daily MTM via market data (Yahoo). "
-        "Parameter grid and saved-run history reuse the same trades without mutating them. "
+        "Phase 2.5 cash earn on uninvested cash (EOD after entries). "
         "Average trade return != portfolio return (sizing, overlap, cash, rejects)."
     )
 
@@ -480,9 +741,10 @@ Symbol is taken from the filename. Extension `.csv` / `.xlsx` / `.xls` is option
             / 100.0
         )
         col4, col5, col6 = st.columns(3)
-        entry_fee = col4.number_input("Entry fee %", value=0.0, min_value=0.0) / 100.0
-        exit_fee = col5.number_input("Exit fee %", value=0.0, min_value=0.0) / 100.0
-        slip = col6.number_input("Slippage %", value=0.0, min_value=0.0) / 100.0
+        # Defaults: 0.05% entry/exit fee, 0.01% slippage (stored as decimals)
+        entry_fee = col4.number_input("Entry fee %", value=0.05, min_value=0.0) / 100.0
+        exit_fee = col5.number_input("Exit fee %", value=0.05, min_value=0.0) / 100.0
+        slip = col6.number_input("Slippage %", value=0.01, min_value=0.0) / 100.0
         col7, col8, col9 = st.columns(3)
         multi = col7.checkbox("Allow multiple positions same symbol", value=True)
         partial = col8.checkbox("Allow partial fills", value=True)
@@ -493,11 +755,13 @@ Symbol is taken from the filename. Extension `.csv` / `.xlsx` / `.xls` is option
         )
 
         st.markdown("#### Phase 2 — Daily MTM / risk")
-        enable_p2 = st.checkbox("Enable Phase 2 market data (Yahoo / daily MTM)", value=False)
+        enable_p2 = st.checkbox(
+            "Enable Phase 2 market data (Yahoo / daily MTM)", value=True
+        )
         p2c1, p2c2, p2c3 = st.columns(3)
         open_mode = p2c1.selectbox(
             "Open valuation mode",
-            options=["market", "source", "cost_basis"],
+            options=["source", "market", "cost_basis"],
             index=0,
         )
         yahoo_adj = p2c2.selectbox(
@@ -508,13 +772,25 @@ Symbol is taken from the filename. Extension `.csv` / `.xlsx` / `.xls` is option
         disc_thr = p2c3.number_input(
             "Discrepancy threshold %", value=2.0, min_value=0.0
         ) / 100.0
-        p2c4, p2c5, p2c6 = st.columns(3)
+        p2c4, p2c5 = st.columns(2)
         rf = p2c4.number_input("Risk-free rate (annual)", value=0.0)
         sortino_t = p2c5.number_input("Sortino target (annual)", value=0.0)
-        bench = p2c6.text_input("Benchmark Yahoo ticker (optional)", value="")
+
+        bench_labels = [b[0] for b in BENCHMARK_PRESETS]
+        bench_choice = st.selectbox("Benchmark", options=bench_labels, index=0)
+        custom_bench = st.text_input("Custom benchmark ticker", value="")
         val_date_str = st.text_input(
             "Valuation date YYYY-MM-DD (optional, default=last event)", value=""
         )
+
+        st.markdown("#### Phase 2.5 — Cash earn")
+        cash_mode = st.selectbox(
+            "Cash earn mode",
+            options=["synthetic_rf", "none", "symbol"],
+            index=0,
+            help="EOD cash after entries: cash *= I_t/I_{t-1}. Symbol mode is stubbed.",
+        )
+        cash_symbol = st.text_input("Cash earn symbol (if mode=symbol)", value="")
 
         st.markdown("#### Phase 3 — Parameter grid")
         st.caption(
@@ -547,6 +823,12 @@ Symbol is taken from the filename. Extension `.csv` / `.xlsx` / `.xls` is option
             if val_date_str.strip():
                 valuation_date = date.fromisoformat(val_date_str.strip())
 
+            preset_ticker = dict(BENCHMARK_PRESETS).get(bench_choice, "^GSPC")
+            if preset_ticker == "__custom__":
+                benchmark_ticker = custom_bench.strip() or None
+            else:
+                benchmark_ticker = preset_ticker
+
             config = SimulationConfig(
                 initial_capital=float(initial_capital),
                 buy_pct_of_equity=float(buy_pct),
@@ -564,7 +846,9 @@ Symbol is taken from the filename. Extension `.csv` / `.xlsx` / `.xls` is option
                 discrepancy_threshold_pct=float(disc_thr),
                 yahoo_price_adjustment=str(yahoo_adj),
                 valuation_date=valuation_date,
-                benchmark_ticker=bench.strip() or None,
+                benchmark_ticker=benchmark_ticker if enable_p2 else None,
+                cash_earn_mode=str(cash_mode),
+                cash_earn_symbol=cash_symbol.strip() or None,
             )
             valid = [t for t in all_trades if t.is_valid_for_sim]
             if not valid:

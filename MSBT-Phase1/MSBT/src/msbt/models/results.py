@@ -1,4 +1,4 @@
-"""Simulation result models (Phase 1 + Phase 2 extensions)."""
+"""Simulation result models (Phase 1 + Phase 2/2.5 extensions)."""
 
 from __future__ import annotations
 
@@ -52,6 +52,8 @@ class TradeResult:
     discrepancy_flag: bool = False
     discrepancy_detail: Optional[str] = None
     valuation_notes: Optional[str] = None
+    entry_signal: Optional[str] = None
+    exit_signal: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         d = {
@@ -63,6 +65,9 @@ class TradeResult:
             "Source trade #": self.source_trade_number,
             "Buy date": self.buy_date.isoformat() if self.buy_date else None,
             "Sell date": self.sell_date.isoformat() if self.sell_date else None,
+            "Signal": _format_signal(self.entry_signal, self.exit_signal),
+            "Entry signal": self.entry_signal,
+            "Exit signal": self.exit_signal,
             "Gross return": self.gross_return,
             "Net return": self.net_return,
             "Allocated capital": self.allocated_capital,
@@ -95,6 +100,11 @@ class TradeResult:
                 }
             )
         return d
+
+
+def _format_signal(entry: Optional[str], exit_: Optional[str]) -> Optional[str]:
+    parts = [p for p in (entry, exit_) if p]
+    return " / ".join(parts) if parts else None
 
 
 @dataclass
@@ -160,6 +170,8 @@ class PerformanceSummary:
     max_drawdown: Optional[float] = None
     max_drawdown_duration_days: Optional[int] = None
     risk_unavailable: dict[str, str] = field(default_factory=dict)
+    cagr: Optional[float] = None
+    cash_interest_pnl: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         d = {
@@ -167,6 +179,8 @@ class PerformanceSummary:
             "Final equity": self.final_equity,
             "Absolute P&L": self.absolute_pnl,
             "Total return %": self.total_return_pct,
+            "CAGR": self.cagr,
+            "Cash interest P&L": self.cash_interest_pnl,
             "Realized P&L": self.realized_pnl,
             "Unrealized P&L": self.unrealized_pnl,
             "Equity including opens": self.equity_including_opens,
@@ -215,3 +229,6 @@ class SimulationResult:
     market_data_report: list[dict[str, Any]] = field(default_factory=list)
     open_valuations: list[dict[str, Any]] = field(default_factory=list)
     affected_dates: list[str] = field(default_factory=list)
+    trading_stats: Optional[Any] = None
+    portfolio_stats: Optional[Any] = None
+    cash_earn_notes: Optional[str] = None

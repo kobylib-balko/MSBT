@@ -40,6 +40,10 @@ def test_daily_mtm_open_position_known_prices():
         open_valuation_mode="market",
         valuation_date=date(2020, 1, 10),
         discrepancy_threshold_pct=0.02,
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
     )
     # Closes: Mon 100, Tue 110, Wed 120, Thu 130, Fri 140
     prices = {
@@ -81,6 +85,10 @@ def test_closed_trade_pnl_unchanged_by_market_prices():
         max_pct_per_symbol=0.50,
         open_valuation_mode="market",
         valuation_date=date(2020, 1, 10),
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
     )
     # Wildly different market path — should not affect closed net_pnl
     prices = {
@@ -125,6 +133,10 @@ def test_lookahead_future_prices_do_not_affect_selection():
         start_date=date(2020, 1, 1),
         open_valuation_mode="market",
         valuation_date=date(2020, 1, 10),
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
     )
     # Future huge prices for BBB — must not change ranking (AAA has higher hist)
     prices = {}
@@ -228,6 +240,10 @@ def test_source_valuation_mode():
         max_pct_per_symbol=0.50,
         open_valuation_mode="source",
         valuation_date=date(2020, 1, 8),
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
     )
     prices = {
         "AAA": {

@@ -39,6 +39,10 @@ def test_grid_two_buy_pcts_independent_and_trades_unchanged():
         buy_pct_of_equity=0.05,
         max_pct_per_symbol=0.50,
         entry_priority=EntryPriority.HIGHEST_AVG_TRADE_RETURN.value,
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
     )
     rows = run_parameter_grid(
         trades,
@@ -70,6 +74,10 @@ def test_grid_two_buy_pcts_independent_and_trades_unchanged():
             buy_pct_of_equity=0.10,
             max_pct_per_symbol=0.50,
             entry_priority=EntryPriority.HIGHEST_AVG_TRADE_RETURN.value,
+            entry_fee_pct=0.0,
+            exit_fee_pct=0.0,
+            slippage_pct=0.0,
+            cash_earn_mode="none",
         ),
         market_data=None,
     )
@@ -79,7 +87,12 @@ def test_grid_two_buy_pcts_independent_and_trades_unchanged():
 
 def test_grid_priority_axis_does_not_require_market_data():
     trades = _trades()
-    base = SimulationConfig(initial_capital=100_000, buy_pct_of_equity=0.05, max_pct_per_symbol=0.50)
+    base = SimulationConfig(initial_capital=100_000, buy_pct_of_equity=0.05, max_pct_per_symbol=0.50,
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
+    )
     rows = run_parameter_grid(
         trades,
         base,
@@ -101,8 +114,18 @@ def test_grid_priority_axis_does_not_require_market_data():
 def test_history_save_list_get_update_delete_and_compare(tmp_path):
     db = tmp_path / "runs.sqlite"
     trades = _trades()
-    cfg_a = SimulationConfig(initial_capital=100_000, buy_pct_of_equity=0.05, max_pct_per_symbol=0.50)
-    cfg_b = SimulationConfig(initial_capital=100_000, buy_pct_of_equity=0.10, max_pct_per_symbol=0.50)
+    cfg_a = SimulationConfig(initial_capital=100_000, buy_pct_of_equity=0.05, max_pct_per_symbol=0.50,
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
+    )
+    cfg_b = SimulationConfig(initial_capital=100_000, buy_pct_of_equity=0.10, max_pct_per_symbol=0.50,
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
+    )
     result_a = run_simulation(trades, cfg_a, market_data=None)
     result_b = run_simulation(trades, cfg_b, market_data=None)
 
@@ -154,7 +177,12 @@ def test_history_save_list_get_update_delete_and_compare(tmp_path):
 def test_history_saves_grid_comparison(tmp_path):
     db = tmp_path / "runs.sqlite"
     trades = _trades()
-    base = SimulationConfig(initial_capital=100_000, buy_pct_of_equity=0.05, max_pct_per_symbol=0.50)
+    base = SimulationConfig(initial_capital=100_000, buy_pct_of_equity=0.05, max_pct_per_symbol=0.50,
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
+    )
     rows = run_parameter_grid(trades, base, {"buy_pct_of_equity": [0.05, 0.20]}, market_data=None)
     rid = save_run(
         name="grid-demo",

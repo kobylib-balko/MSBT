@@ -1,10 +1,12 @@
-# Multi-Symbol Portfolio Backtester (MSBT) — Phase 3
+# Multi-Symbol Portfolio Backtester (MSBT) — 0.4.0
 
 Event-based portfolio simulation: upload multiple trade CSVs, normalize, and simulate a shared-cash portfolio with overlaps. Does **not** sum trade returns.
 
 **Phase 1:** supplied Return % for closed-trade outcomes; event equity curve.  
 **Phase 2:** optional `MarketDataProvider` (Yahoo via yfinance + disk cache, or synthetic fixtures) for daily MTM equity, open-position valuation, risk metrics (vol/Sharpe/Sortino/max DD), and optional benchmark.  
-**Phase 3:** parameter-grid scenarios, SQLite run history, and TradingView ingestion hooks (interfaces only — no live webhook).
+**Phase 2.5:** cash earn on uninvested cash (`cash_earn_mode`: `none` | `synthetic_rf` | `symbol`). Synthetic RF builds a total-return index `I_t = I_{t-1}*(1+rate_t)^(1/365)`; **EOD cash after entries** is multiplied by `I_t/I_{prev}`. Closed-trade P&L is unchanged. Rates CSV: `data/synthetic_rf_rates.csv` or `cash_earn_rates_path`. Symbol mode is stubbed.  
+**Phase 3:** parameter-grid scenarios, SQLite run history, and TradingView ingestion hooks (interfaces only — no live webhook).  
+**UX (0.4):** richer trading/portfolio stats, benchmark comparison table, trade ledger signals, CAGR in results, defaults (fees/slippage, Yahoo on, open valuation `source`, benchmark `^GSPC`).
 
 ## Return % convention
 
@@ -67,9 +69,14 @@ config = SimulationConfig(
     initial_capital=100_000,
     buy_pct_of_equity=0.05,
     max_pct_per_symbol=0.20,
+    entry_fee_pct=0.0005,               # default
+    exit_fee_pct=0.0005,
+    slippage_pct=0.0001,
     allow_leverage=False,
-    open_valuation_mode="market",       # market | source | cost_basis
+    open_valuation_mode="source",       # market | source | cost_basis
     yahoo_price_adjustment="adjusted",  # adjusted | unadjusted
+    benchmark_ticker="^GSPC",
+    cash_earn_mode="synthetic_rf",      # none | synthetic_rf | symbol
     risk_free_rate=0.0,
     sortino_target=0.0,
     discrepancy_threshold_pct=0.02,
@@ -133,7 +140,8 @@ MSBT/
   src/msbt/
     importers/ validation/ models/ simulation/
     market_data/   # Phase 2 providers + cache
-    analytics/     # export, risk, benchmark, grid, history
+    analytics/     # export, risk, benchmark, grid, history, stats
+    cash_earn/     # Phase 2.5 synthetic RF rates + index
     ingestion/     # TradingView hooks (interfaces only)
     streamlit_app/
   tests/

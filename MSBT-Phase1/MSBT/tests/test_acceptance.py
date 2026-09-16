@@ -53,6 +53,7 @@ def test_acceptance_example_2_same_day_exit_priority():
         allow_multiple_positions_same_symbol=True,
         entry_priority="highest_avg_trade_return",
         start_date=date(2020, 2, 1),
+        cash_earn_mode="none",
     )
 
     result = run_simulation(trades, config)
@@ -94,6 +95,10 @@ def test_same_day_priority_partial():
         allow_partial_fills=True,
         entry_priority="highest_avg_trade_return",
         start_date=date(2020, 2, 1),
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
     )
     result = run_simulation(trades, config)
     snap = next(s for s in result.portfolio_timeseries if s.timestamp == date(2020, 2, 10))

@@ -24,6 +24,10 @@ def test_one_win_one_loss():
         initial_capital=100_000,
         buy_pct_of_equity=0.10,
         max_pct_per_symbol=0.50,
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
     )
     result = run_simulation(trades, cfg)
     # First: allocate 10k, exit 11k → equity 101000
@@ -36,7 +40,15 @@ def test_same_day_sell_before_buy():
         make_trade("T1", "AAPL", "2020-01-01", "2020-01-15", 0.10),
         make_trade("T2", "MSFT", "2020-01-15", "2020-01-20", 0.0),
     ]
-    cfg = SimulationConfig(initial_capital=100_000, buy_pct_of_equity=0.5, max_pct_per_symbol=1.0)
+    cfg = SimulationConfig(
+        initial_capital=100_000,
+        buy_pct_of_equity=0.5,
+        max_pct_per_symbol=1.0,
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
+    )
     result = run_simulation(trades, cfg)
     snap = next(s for s in result.portfolio_timeseries if s.timestamp == date(2020, 1, 15))
     # Exit AAPL first: cost 50k → 55k; cash was 50k + 55k = 105k; then buy MSFT 50% of 105k = 52500
@@ -58,6 +70,10 @@ def test_insufficient_capital_reject_no_partial():
         allow_partial_fills=False,
         entry_priority="highest_avg_trade_return",
         min_history_trades=1,
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
     )
     # No history → all scores null → tie-break symbol then trade_id: A, B, C
     result = run_simulation(trades, cfg)
@@ -78,6 +94,10 @@ def test_max_symbol_exposure():
         max_pct_per_symbol=0.30,
         allow_multiple_positions_same_symbol=True,
         allow_partial_fills=False,
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
     )
     result = run_simulation(trades, cfg)
     by_id = {r.trade_id: r for r in result.trade_results}
@@ -95,6 +115,10 @@ def test_same_symbol_disallowed():
         buy_pct_of_equity=0.10,
         max_pct_per_symbol=0.50,
         allow_multiple_positions_same_symbol=False,
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
     )
     result = run_simulation(trades, cfg)
     by_id = {r.trade_id: r for r in result.trade_results}
@@ -127,7 +151,15 @@ def test_open_position_at_end():
     trades = [
         make_trade("O1", "XYZ", "2020-01-01", None, 0.10),
     ]
-    cfg = SimulationConfig(initial_capital=100_000, buy_pct_of_equity=0.2, max_pct_per_symbol=0.5)
+    cfg = SimulationConfig(
+        initial_capital=100_000,
+        buy_pct_of_equity=0.2,
+        max_pct_per_symbol=0.5,
+        entry_fee_pct=0.0,
+        exit_fee_pct=0.0,
+        slippage_pct=0.0,
+        cash_earn_mode="none",
+    )
     result = run_simulation(trades, cfg)
     assert result.performance_metrics.final_equity == 100000.0  # cost basis valuation
     open_res = [r for r in result.trade_results if r.is_open]

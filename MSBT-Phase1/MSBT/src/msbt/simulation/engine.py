@@ -1,20 +1,24 @@
-"""Phase 1 event-based portfolio simulation engine.
+"""Phase 1 event-based portfolio simulation engine (+ Phase 2.5 cash earn).
 
 Authoritative event order at timestamp T:
   1. Exits with sell_date == T (trade_id ascending)
   2. Entries with buy_date == T (priority sorted)
-  3. Snapshot end-of-event portfolio state
+  3. EOD cash earn on remaining cash (if cash_earn_mode != none):
+       cash *= I_T / I_prev   (locked: **EOD cash after entries**)
+  4. Snapshot end-of-event portfolio state
 
 Sizing equity rule (locked): equity_for_sizing is portfolio equity immediately
 AFTER all exits at T and BEFORE any new entries. Opening a position does not
-change total equity (cash → invested cost basis).
+change total equity (cash → invested cost basis). Cash earn does not affect
+sizing on day T (applied after entries).
 """
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
+from pathlib import Path
 from typing import Any, Optional
 
 from msbt.models.config import SimulationConfig
@@ -78,6 +82,26 @@ def _date_filtered(trade: Trade, config: SimulationConfig) -> bool:
     return False
 
 
+def _weekdays(start: date, end: date) -> list[date]:
+    out: list[date] = []
+    d = start
+    while d <= end:
+        if d.weekday() < 5:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def _calendar_days(start: date, end: date) -> list[date]:
+    """Inclusive calendar span (needed so weekend event dates still exit/enter)."""
+    out: list[date] = []
+    d = start
+    while d <= end:
+        out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
 def _make_rejected(
     trade: Trade,
     reason: str,
@@ -108,39 +132,66 @@ def _make_rejected(
         is_open=trade.is_open,
         buy_price=trade.buy_price,
         sell_price=trade.sell_price,
+        entry_signal=trade.entry_signal,
+        exit_signal=trade.exit_signal,
     )
+
+
+def _resolve_cash_earn(config: SimulationConfig) -> tuple[bool, Any, Optional[str]]:
+    """Return (active, index_or_None, notes)."""
+    mode = (config.cash_earn_mode or "none").lower()
+    if mode == "none":
+        return False, None, None
+    if mode == "symbol":
+        sym = config.cash_earn_symbol or "(unset)"
+        return (
+            False,
+            None,
+            f"cash_earn_mode=symbol ({sym}) is stubbed/unavailable; no cash earn applied.",
+        )
+    if mode != "synthetic_rf":
+        return False, None, f"Unknown cash_earn_mode={mode!r}; treated as none."
+
+    from msbt.cash_earn import SyntheticRateProvider
+
+    roots = [
+        Path(__file__).resolve().parents[3] / "data",  # MSBT/data
+        Path("data"),
+    ]
+    provider = SyntheticRateProvider.from_config_path_or_default(
+        config.cash_earn_rates_path, search_roots=roots
+    )
+    return True, provider, f"synthetic_rf rates from {provider.source}"
 
 
 def run_simulation(
     trades: list[Trade],
     config: SimulationConfig,
     market_data: Any = None,  # Phase 2: daily MTM when provided
+    rate_provider: Any = None,  # optional SyntheticRateProvider override (tests)
 ) -> SimulationResult:
     """Run event-based capital simulation.
 
-    When market_data is None: Phase 1 event equity curve only.
+    When market_data is None: Phase 1 event equity curve only (unless cash earn
+    expands the calendar to weekdays).
     When market_data is provided: also build daily MTM timeseries + risk
     (closed-trade P&L still uses Return %; market prices do not affect selection).
+
+    Cash earn (Phase 2.5): when cash_earn_mode=synthetic_rf, after exits and
+    entries each simulation day, remaining cash is multiplied by I_T/I_prev.
+    Closed trade P&L is unchanged by RF.
     """
 
     sim_id = str(uuid.uuid4())
     eligible = [t for t in trades if t.is_valid_for_sim]
-    # History for priority: all completed trades (even if not executed by us);
-    # look-ahead ban uses sell_date < decision_ts against source closed trades.
-    # Spec: metrics from already closed trades of that symbol before decision time.
-    # We use the *source* completed trades' sell dates / returns for priority scoring
-    # (historical performance of the strategy on that symbol), not only accepted ones.
     priority_history = [t for t in eligible if t.is_completed]
 
     state = PortfolioState(cash=money(config.initial_capital))
     trade_results: list[TradeResult] = []
     rejected: list[TradeResult] = []
     snapshots: list[EquitySnapshot] = []
-    # Track which trade_ids we've already processed as entries
     pending_by_buy: dict[date, list[Trade]] = {}
-    exits_by_sell: dict[date, list[str]] = {}  # sell_date -> open position trade_ids scheduled
 
-    # Pre-reject date-filtered
     to_simulate: list[Trade] = []
     for t in eligible:
         if _date_filtered(t, config):
@@ -153,33 +204,39 @@ def run_simulation(
     for t in to_simulate:
         pending_by_buy.setdefault(t.buy_date, []).append(t)
 
-    # Event timestamps
     event_dates: set[date] = set()
     for t in to_simulate:
         event_dates.add(t.buy_date)
         if t.sell_date is not None:
             event_dates.add(t.sell_date)
 
-    # Also need exit events for positions we open — handled dynamically via opens
-    # We'll iterate sorted unique dates that appear; when we open, we register exit.
-
     initial = money(config.initial_capital)
-    # Snapshot at start if we want — only on event dates per Phase 1
-
-    # Map trade_id -> Trade for exit lookup
     trade_map = {t.trade_id: t for t in to_simulate}
+    all_event_dates = sorted(event_dates)
 
-    # Collect all dates that could be events; recompute as we go for exits of accepted
-    all_dates = sorted(event_dates)
+    cash_earn_active, provider, cash_earn_notes = _resolve_cash_earn(config)
+    if rate_provider is not None and cash_earn_active:
+        provider = rate_provider
+        cash_earn_notes = f"synthetic_rf rates from override ({getattr(provider, 'source', 'override')})"
 
-    # Use a pointer approach: process known dates; when new exit dates appear they're
-    # already in event_dates from sell_date of candidates. Only accepted positions exit.
-    # All candidate sell dates are already in event_dates.
+    rf_index: dict[date, float] = {}
+    if cash_earn_active and all_event_dates:
+        start_d = all_event_dates[0]
+        end_d = all_event_dates[-1]
+        if config.valuation_date and config.valuation_date > end_d:
+            end_d = config.valuation_date
+        rf_index = provider.index_for_range(start_d, end_d)
+        # Full calendar so weekend buy/sell dates still process; RF compounds daily.
+        sim_dates = _calendar_days(start_d, end_d)
+    else:
+        sim_dates = all_event_dates
 
     realized_pnl_total = 0.0
     closed_executed: list[TradeResult] = []
+    cumulative_cash_interest = 0.0
+    prev_sim_day: Optional[date] = None
 
-    for T in all_dates:
+    for T in sim_dates:
         # ---- 1. EXITS (trade_id ascending) ----
         exit_ids = sorted(
             tid for tid, pos in state.opens.items() if pos.trade.sell_date == T
@@ -188,7 +245,6 @@ def run_simulation(
             pos = state.opens.pop(tid)
             t = pos.trade
             if t.is_open or t.sell_date is None:
-                # Shouldn't exit open positions in Phase 1 event loop via sell_date
                 continue
             ex = compute_exit(
                 cost_basis=pos.cost_basis,
@@ -226,6 +282,8 @@ def run_simulation(
                 is_open=False,
                 buy_price=t.buy_price,
                 sell_price=t.sell_price,
+                entry_signal=t.entry_signal,
+                exit_signal=t.exit_signal,
             )
             trade_results.append(result)
             closed_executed.append(result)
@@ -238,7 +296,6 @@ def run_simulation(
         ranked = rank_entries(candidates, T, priority_history, config)
 
         for t in ranked:
-            # Same-symbol policy
             if (
                 not config.allow_multiple_positions_same_symbol
                 and state.symbol_has_open(t.symbol)
@@ -248,7 +305,6 @@ def run_simulation(
                 rejected.append(r)
                 continue
 
-            # Max open positions
             if (
                 config.max_open_positions is not None
                 and len(state.opens) >= config.max_open_positions
@@ -267,7 +323,6 @@ def run_simulation(
                 )
             )
 
-            # Available cash for allocation (no leverage): cover capital + entry costs
             cost_factor = 1.0 + config.entry_fee_pct + config.slippage_pct
             if cost_factor <= 0:
                 cost_factor = 1.0
@@ -276,7 +331,6 @@ def run_simulation(
             allowed = money(min(target, max_by_cash, remaining_symbol_cap))
 
             if allowed <= 0:
-                # Prefer symbol-cap reason when that constraint binds
                 if remaining_symbol_cap <= 0:
                     reason = REJECTED_MAX_SYMBOL
                 else:
@@ -318,7 +372,6 @@ def run_simulation(
                 fractional_shares=config.fractional_shares,
             )
             if entry.cash_outflow > state.cash + 1e-9:
-                # Safety: never allocate more than available cash
                 r = _make_rejected(t, REJECTED_INSUFFICIENT)
                 trade_results.append(r)
                 rejected.append(r)
@@ -335,7 +388,6 @@ def run_simulation(
                 status_label=status_label,
             )
 
-            # Open trades: record as still open (no exit yet)
             if t.is_open:
                 trade_results.append(
                     TradeResult(
@@ -364,33 +416,42 @@ def run_simulation(
                         is_open=True,
                         buy_price=t.buy_price,
                         sell_price=None,
+                        entry_signal=t.entry_signal,
+                        exit_signal=t.exit_signal,
                     )
                 )
 
-        # ---- 3. SNAPSHOT ----
-        eq = state.equity()
-        invested = state.invested_cost_basis()
-        snapshots.append(
-            EquitySnapshot(
-                timestamp=T,
-                equity=eq,
-                cash=state.cash,
-                invested_cost_basis=invested,
-                open_positions=len(state.opens),
-                exposure_pct=(invested / eq) if eq else 0.0,
-                cumulative_return=(eq - initial) / initial if initial else 0.0,
-            )
-        )
+        # ---- 3. EOD cash earn (after entries) ----
+        if cash_earn_active and rf_index:
+            from msbt.cash_earn import apply_cash_earn_ratio
 
-    # Any remaining open positions already recorded if they were open-status;
-    # completed trades still open in sim (shouldn't happen if sell_date in events)
-    # Record accepted opens that are completed-but-not-yet-exited? All sell dates in events.
-    # Positions still open at end: completed trades shouldn't remain; open-status may.
+            prev = prev_sim_day if prev_sim_day is not None else (T - timedelta(days=1))
+            ratio = provider.ratio(rf_index, T, prev)
+            state.cash, interest = apply_cash_earn_ratio(state.cash, ratio)
+            cumulative_cash_interest = money(cumulative_cash_interest + interest)
+
+        # ---- 4. SNAPSHOT ----
+        # Event-only path: snapshot on event dates. Cash-earn path: every weekday.
+        if cash_earn_active or T in event_dates:
+            eq = state.equity()
+            invested = state.invested_cost_basis()
+            snapshots.append(
+                EquitySnapshot(
+                    timestamp=T,
+                    equity=eq,
+                    cash=state.cash,
+                    invested_cost_basis=invested,
+                    open_positions=len(state.opens),
+                    exposure_pct=(invested / eq) if eq else 0.0,
+                    cumulative_return=(eq - initial) / initial if initial else 0.0,
+                )
+            )
+
+        prev_sim_day = T
+
     for tid, pos in list(state.opens.items()):
         t = pos.trade
         if not t.is_open:
-            # Still open because sell is after last event? shouldn't happen
-            # Record as open at end with cost basis
             trade_results.append(
                 TradeResult(
                     trade_id=t.trade_id,
@@ -418,6 +479,8 @@ def run_simulation(
                     is_open=True,
                     buy_price=t.buy_price,
                     sell_price=t.sell_price,
+                    entry_signal=t.entry_signal,
+                    exit_signal=t.exit_signal,
                 )
             )
 
@@ -429,9 +492,20 @@ def run_simulation(
         trade_results=trade_results,
         closed_executed=closed_executed,
         state=state,
+        cash_interest_pnl=cumulative_cash_interest,
     )
     symbol_metrics = _breakdown_by(trade_results, key="symbol")
     source_metrics = _breakdown_by(trade_results, key="source_file")
+
+    from msbt.analytics.stats import attach_stats_to_result
+
+    trading_stats, portfolio_stats, run_cagr = attach_stats_to_result(
+        trade_results=trade_results,
+        performance=perf,
+        event_snapshots=snapshots,
+        daily_mtm=[],
+    )
+    perf.cagr = run_cagr
 
     result = SimulationResult(
         portfolio_timeseries=snapshots,
@@ -443,6 +517,9 @@ def run_simulation(
         simulation_config=config.to_dict(),
         validation_report=[],
         simulation_id=sim_id,
+        trading_stats=trading_stats,
+        portfolio_stats=portfolio_stats,
+        cash_earn_notes=cash_earn_notes,
     )
 
     if market_data is not None:
@@ -461,7 +538,6 @@ def run_simulation(
         result.affected_dates = affected
         result.benchmark_metrics = benchmark
 
-        # Enrich open TradeResults with valuation fields (do not touch closed P&L)
         ov_by_id = {o["trade_id"]: o for o in open_vals}
         for tr in result.trade_results:
             if not tr.is_open:
@@ -500,13 +576,23 @@ def run_simulation(
                     if config.initial_capital
                     else 0.0
                 )
-            # Sum unrealized from open valuations when available
             if open_vals:
                 u = sum(
                     (o.get("unrealized_pnl") or 0.0) for o in open_vals
                     if o.get("unrealized_pnl") is not None
                 )
                 result.performance_metrics.unrealized_pnl = money(u)
+
+        # Refresh stats with daily MTM preferred for invested-bars / portfolio stats / CAGR
+        trading_stats, portfolio_stats, run_cagr = attach_stats_to_result(
+            trade_results=result.trade_results,
+            performance=result.performance_metrics,
+            event_snapshots=result.portfolio_timeseries,
+            daily_mtm=result.daily_mtm_timeseries,
+        )
+        result.trading_stats = trading_stats
+        result.portfolio_stats = portfolio_stats
+        result.performance_metrics.cagr = run_cagr
 
     return result
 
@@ -518,6 +604,7 @@ def _build_performance(
     trade_results: list[TradeResult],
     closed_executed: list[TradeResult],
     state: PortfolioState,
+    cash_interest_pnl: float = 0.0,
 ) -> PerformanceSummary:
     initial = money(config.initial_capital)
     accepted = sum(1 for r in trade_results if r.status == ACCEPTED)
@@ -550,15 +637,8 @@ def _build_performance(
         mid = len(sb) // 2
         med_bars = float(sb[mid]) if len(sb) % 2 else (sb[mid - 1] + sb[mid]) / 2.0
 
-    # Phase 1 cost-basis: unrealized = 0; equity including opens = cash + cost bases
     equity_incl = final_equity
-    # Realized-only: cash only would understate; spec says report realized-only excluding opens.
-    # Interpreting: equity if opens marked at cost equals cash+cost; realized-only view =
-    # initial + realized_pnl (cash that would exist if opens returned cost basis).
     equity_realized_only = money(state.cash + state.invested_cost_basis())
-    # Actually realized-only typically means: don't count open positions' value beyond
-    # returning capital — which at cost basis is the same. Separate: cash + 0 unrealized.
-    # We'll set equity_realized_only = cash + cost bases (same) and unrealized=0.
 
     return PerformanceSummary(
         initial_capital=initial,
@@ -580,6 +660,7 @@ def _build_performance(
         profit_factor=profit_factor,
         avg_holding_bars=avg_bars,
         median_holding_bars=med_bars,
+        cash_interest_pnl=money(cash_interest_pnl),
     )
 
 

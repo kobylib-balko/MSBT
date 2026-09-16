@@ -18,6 +18,8 @@ def make_trade(
     status: TradeStatus | None = None,
     source_file: str = "Test_NASDAQ_SYM_2020-01-01.csv",
     source_trade_number: int = 1,
+    entry_signal: str | None = "Long1",
+    exit_signal: str | None = "Exitlong1",
 ) -> Trade:
     is_open = sell is None
     if status is None:
@@ -36,4 +38,6 @@ def make_trade(
         duration_bars=duration_bars,
         source_file=source_file.replace("SYM", symbol),
         status=status,
+        entry_signal=entry_signal,
+        exit_signal=None if is_open else exit_signal,
     )

@@ -340,6 +340,21 @@ def import_trade_file(
             except (TypeError, ValueError):
                 pass
 
+        entry_signal = None
+        exit_signal = None
+        try:
+            es = entry.get("Signal")
+            if es is not None and not (isinstance(es, float) and pd.isna(es)):
+                entry_signal = str(es).strip() or None
+        except Exception:
+            pass
+        try:
+            xs = exit_.get("Signal")
+            if xs is not None and not (isinstance(xs, float) and pd.isna(xs)):
+                exit_signal = str(xs).strip() or None
+        except Exception:
+            pass
+
         tid = f"{prefix}-{trade_num_int}"
         if errors:
             status = TradeStatus.INVALID
@@ -387,6 +402,8 @@ def import_trade_file(
                 status=status,
                 source_return_pct_raw=ret_raw,
                 source_net_pnl_usd=net_pnl,
+                entry_signal=entry_signal,
+                exit_signal=exit_signal,
                 validation_errors=errors,
             )
         )

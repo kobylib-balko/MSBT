@@ -10,6 +10,12 @@ from msbt.analytics.history import (
     save_run,
     update_run_meta,
 )
+from msbt.analytics.stats import (
+    PortfolioStats,
+    TradingStats,
+    compute_portfolio_stats,
+    compute_trading_stats,
+)
 
 __all__ = [
     "export_results_excel",
@@ -26,4 +32,8 @@ __all__ = [
     "update_run_meta",
     "delete_run",
     "compare_runs",
+    "TradingStats",
+    "PortfolioStats",
+    "compute_trading_stats",
+    "compute_portfolio_stats",
 ]

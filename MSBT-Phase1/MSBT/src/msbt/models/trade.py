@@ -32,6 +32,8 @@ class Trade:
     # Reference-only fields from source
     source_return_pct_raw: Optional[float] = None  # as percent points from file
     source_net_pnl_usd: Optional[float] = None
+    entry_signal: Optional[str] = None
+    exit_signal: Optional[str] = None
     validation_errors: list[str] = field(default_factory=list)
 
     @property
