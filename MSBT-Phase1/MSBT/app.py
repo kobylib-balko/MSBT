@@ -1,6 +1,6 @@
 """Streamlit entrypoint (local + Community Cloud).
 
-Cloud main file path: MSBT/app.py (Phase 3)
+Cloud main file path: MSBT/app.py (Phase 4)
 """
 from __future__ import annotations
 

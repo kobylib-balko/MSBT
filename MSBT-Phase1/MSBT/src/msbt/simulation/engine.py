@@ -102,6 +102,17 @@ def _calendar_days(start: date, end: date) -> list[date]:
     return out
 
 
+
+def _excursion_kwargs(trade: Trade) -> dict:
+    """Copy optional MFE/MAE fields from Trade onto TradeResult kwargs."""
+    return {
+        "mfe_pct": trade.mfe_pct,
+        "mae_pct": trade.mae_pct,
+        "mfe_usd": trade.mfe_usd,
+        "mae_usd": trade.mae_usd,
+    }
+
+
 def _make_rejected(
     trade: Trade,
     reason: str,
@@ -134,6 +145,7 @@ def _make_rejected(
         sell_price=trade.sell_price,
         entry_signal=trade.entry_signal,
         exit_signal=trade.exit_signal,
+        **_excursion_kwargs(trade),
     )
 
 
@@ -284,6 +296,7 @@ def run_simulation(
                 sell_price=t.sell_price,
                 entry_signal=t.entry_signal,
                 exit_signal=t.exit_signal,
+                **_excursion_kwargs(t),
             )
             trade_results.append(result)
             closed_executed.append(result)
@@ -418,6 +431,7 @@ def run_simulation(
                         sell_price=None,
                         entry_signal=t.entry_signal,
                         exit_signal=t.exit_signal,
+                        **_excursion_kwargs(t),
                     )
                 )
 
@@ -481,6 +495,7 @@ def run_simulation(
                     sell_price=t.sell_price,
                     entry_signal=t.entry_signal,
                     exit_signal=t.exit_signal,
+                    **_excursion_kwargs(t),
                 )
             )
 
@@ -498,6 +513,7 @@ def run_simulation(
     source_metrics = _breakdown_by(trade_results, key="source_file")
 
     from msbt.analytics.stats import attach_stats_to_result
+    from msbt.analytics.mfe_mae import compute_mfe_mae_stats
 
     trading_stats, portfolio_stats, run_cagr = attach_stats_to_result(
         trade_results=trade_results,
@@ -506,6 +522,7 @@ def run_simulation(
         daily_mtm=[],
     )
     perf.cagr = run_cagr
+    mfe_mae_stats = compute_mfe_mae_stats(trade_results)
 
     result = SimulationResult(
         portfolio_timeseries=snapshots,
@@ -519,6 +536,7 @@ def run_simulation(
         simulation_id=sim_id,
         trading_stats=trading_stats,
         portfolio_stats=portfolio_stats,
+        mfe_mae_stats=mfe_mae_stats,
         cash_earn_notes=cash_earn_notes,
     )
 
@@ -593,6 +611,7 @@ def run_simulation(
         result.trading_stats = trading_stats
         result.portfolio_stats = portfolio_stats
         result.performance_metrics.cagr = run_cagr
+        result.mfe_mae_stats = compute_mfe_mae_stats(result.trade_results)
 
     return result
 

@@ -1,4 +1,4 @@
-"""Streamlit UI: Phase 1–3 + UX backlog + Phase 2.5 cash earn."""
+"""Streamlit UI: Phase 1–4 + UX backlog + Phase 2.5 cash earn."""
 
 from __future__ import annotations
 
@@ -14,6 +14,14 @@ import streamlit as st
 
 from msbt.analytics.export import export_results_excel
 from msbt.analytics.grid import run_parameter_grid
+from msbt.analytics.robustness import (
+    buy_date_span,
+    default_cutoff,
+    run_locked_oos,
+    run_stress_pack,
+    run_train_vs_test,
+    run_walk_forward,
+)
 from msbt.analytics.history import (
     compare_runs,
     delete_run,
@@ -471,6 +479,56 @@ def _render_trading_portfolio_stats(result) -> None:
         st.caption(f"From {ps.source} equity curve ({ps.n_days} days).")
 
 
+
+def _ensure_mfe_mae_stats(result):
+    """Use attached stats, or recompute from trade_results when missing."""
+    stats = getattr(result, "mfe_mae_stats", None)
+    if stats is not None:
+        return stats
+    trs = getattr(result, "trade_results", None) or []
+    if not trs:
+        return None
+    from msbt.analytics.mfe_mae import compute_mfe_mae_stats
+
+    stats = compute_mfe_mae_stats(trs)
+    try:
+        result.mfe_mae_stats = stats
+    except Exception:
+        pass
+    return stats
+
+
+def _render_mfe_mae(result) -> None:
+    stats = _ensure_mfe_mae_stats(result)
+    if stats is None:
+        return
+    st.subheader("MFE / MAE")
+    c = st.columns(5)
+    c[0].metric("N with data", stats.n_with_data)
+    c[1].metric("Median MFE", _metric_or_na(stats.median_mfe, pct=True))
+    c[2].metric("Median MAE", _metric_or_na(stats.median_mae, pct=True))
+    c[3].metric("Median giveback", _metric_or_na(stats.median_giveback, pct=True))
+    c[4].metric("Median MFE/|MAE|", _metric_or_na(stats.median_mfe_mae_ratio))
+    c2 = st.columns(4)
+    c2[0].metric("Winners median MFE", _metric_or_na(stats.winners_median_mfe, pct=True))
+    c2[1].metric("Winners median MAE", _metric_or_na(stats.winners_median_mae, pct=True))
+    c2[2].metric("Losers median MFE", _metric_or_na(stats.losers_median_mfe, pct=True))
+    c2[3].metric("Losers median MAE", _metric_or_na(stats.losers_median_mae, pct=True))
+    st.caption(
+        f"Winners n={stats.winners_n}, losers n={stats.losers_n} "
+        f"(of {stats.n_closed_executed} executed closed). {stats.scope_note}"
+    )
+    if stats.suggested_stop_pct is not None or stats.suggested_target_pct is not None:
+        s = st.columns(2)
+        s[0].metric("Suggested stop %", _metric_or_na(stats.suggested_stop_pct, pct=True))
+        s[1].metric("Suggested target %", _metric_or_na(stats.suggested_target_pct, pct=True))
+    if stats.recommendations:
+        st.info("\n".join(f"• {r}" for r in stats.recommendations))
+    st.caption(
+        "MFE/MAE suggestions are descriptive only — not applied automatically to this simulation."
+    )
+
+
 def _render_single_results(result) -> None:
     pm = result.performance_metrics
     m1, m2, m3, m4, m5 = st.columns(5)
@@ -486,6 +544,7 @@ def _render_single_results(result) -> None:
     st.info(pm.note)
 
     _render_trading_portfolio_stats(result)
+    _render_mfe_mae(result)
 
     if result.risk_metrics is not None:
         st.subheader("Risk metrics (daily MTM)")
@@ -631,9 +690,348 @@ def _render_grid_results(rows: list[dict], base_config: dict) -> None:
             st.code(traceback.format_exc())
 
 
+
+def _phase4_metrics_table(rows: list[dict], pct_keys: list[str] | None = None) -> pd.DataFrame:
+    df = pd.DataFrame(rows)
+    pct_keys = pct_keys or [
+        "return_pct",
+        "cagr",
+        "max_drawdown",
+        "buy_pct_of_equity",
+        "delta_return_pct",
+        "delta_cagr",
+        "train_return_pct",
+        "test_return_pct",
+        "train_cagr",
+        "test_cagr",
+        "train_max_drawdown",
+        "test_max_drawdown",
+        "avg_test_return_pct",
+        "compound_test_return_pct",
+    ]
+    show = df.copy()
+    for col in pct_keys:
+        if col in show.columns:
+            show[col] = show[col].apply(
+                lambda v: None
+                if v is None or (isinstance(v, float) and pd.isna(v))
+                else (v * 100.0 if isinstance(v, (int, float)) else v)
+            )
+    return show
+
+
+def _style_stress(df: pd.DataFrame):
+    """Green/red on delta_return_pct vs baseline."""
+
+    def color_delta(col: pd.Series):
+        styles = []
+        for v in col:
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                styles.append("")
+            elif v < 0:
+                styles.append("background-color: #ffc7ce; color: #9c0006")
+            elif v > 0:
+                styles.append("background-color: #c6efce; color: #006100")
+            else:
+                styles.append("")
+        return styles
+
+    styler = df.style
+    if "delta_return_pct" in df.columns:
+        styler = styler.apply(color_delta, subset=["delta_return_pct"])
+    if "delta_cagr" in df.columns:
+        styler = styler.apply(color_delta, subset=["delta_cagr"])
+    return styler
+
+
+def _resolve_phase4_cutoff(valid_trades, auto_70_30: bool, cutoff_str: str):
+    if auto_70_30:
+        return default_cutoff(valid_trades, mode="70_30"), "auto 70/30 by unique buy dates"
+    if cutoff_str.strip():
+        return date.fromisoformat(cutoff_str.strip()), "user cutoff"
+    return default_cutoff(valid_trades, mode="median"), "median buy date"
+
+
+def _render_phase4_section(valid_trades, report) -> None:
+    """Phase 4 — Robustness controls and results (uses active baseline config)."""
+    st.markdown("---")
+    st.subheader("Phase 4 — Robustness")
+    st.caption(
+        "Split rule: **Train** = buy_date < cutoff; **Test** = buy_date ≥ cutoff "
+        "(sell date ignored for membership). "
+        "Uses the baseline config from the last **Run simulation** / **Run parameter grid**. "
+        "Locked OOS / walk-forward select params on Train only (robust score: "
+        "CAGR/|max DD| when DD exists, else return − |DD|, else return)."
+    )
+
+    span = buy_date_span(valid_trades)
+    if span:
+        st.caption(f"Buy-date span in uploaded data: **{span[0]}** → **{span[1]}** ({len(valid_trades)} valid trades).")
+
+    cfg: SimulationConfig | None = st.session_state.get("active_config")
+    if cfg is None:
+        st.info(
+            "Run a simulation (or parameter grid) once above to lock the baseline "
+            "config for Phase 4. Buttons stay disabled until then."
+        )
+
+    c1, c2, c3 = st.columns(3)
+    auto_70 = c1.checkbox("Auto 70/30 cutoff (by unique buy dates)", value=False, key="p4_auto70")
+    med = default_cutoff(valid_trades, mode="median")
+    default_cut = med.isoformat() if med else ""
+    cutoff_str = c2.text_input(
+        "Cutoff date YYYY-MM-DD",
+        value=default_cut,
+        disabled=auto_70,
+        key="p4_cutoff",
+    )
+    drop_from = c3.selectbox(
+        "Stress: rank drop-symbol on",
+        options=["train", "full"],
+        index=0,
+        key="p4_drop_from",
+    )
+
+    st.markdown("##### Small grid (Locked OOS / Walk-forward)")
+    g1, g2, g3 = st.columns(3)
+    p4_buys = g1.multiselect(
+        "Buy % of equity",
+        options=[5, 10, 15, 20],
+        default=[5, 10],
+        key="p4_buys",
+    )
+    p4_prios = g2.multiselect(
+        "Entry priority",
+        options=[e.value for e in EntryPriority],
+        default=[EntryPriority.HIGHEST_AVG_TRADE_RETURN.value],
+        key="p4_prios",
+    )
+    p4_max = g3.text_input("Optional max % / symbol (comma % pts)", value="", key="p4_max")
+
+    st.markdown("##### Walk-forward windows")
+    w1, w2, w3, w4 = st.columns(4)
+    wf_train = w1.number_input("Train years", value=4.0, min_value=0.5, step=0.5, key="p4_wf_train")
+    wf_test = w2.number_input("Test years", value=1.0, min_value=0.25, step=0.25, key="p4_wf_test")
+    wf_step = w3.number_input("Step years", value=1.0, min_value=0.25, step=0.25, key="p4_wf_step")
+    wf_mode = w4.selectbox("Mode", options=["expanding", "rolling"], index=0, key="p4_wf_mode")
+
+    b1, b2, b3, b4 = st.columns(4)
+    disabled = cfg is None or not valid_trades
+    run_tt = b1.button("Run Train vs Test", disabled=disabled, key="p4_btn_tt")
+    run_oos = b2.button("Run Locked OOS (grid+test)", disabled=disabled, key="p4_btn_oos")
+    run_wf = b3.button("Run Walk-forward", disabled=disabled, key="p4_btn_wf")
+    run_st = b4.button("Run Stress pack", disabled=disabled, key="p4_btn_st")
+
+    if cfg is None:
+        return
+
+    market_data = st.session_state.get("active_market_data")
+    # Rebuild provider if Phase 2 was enabled but object not kept (session refresh)
+    if market_data is None and st.session_state.get("active_enable_p2"):
+        try:
+            from msbt.market_data import YahooFinanceProvider
+
+            market_data = YahooFinanceProvider()
+            st.session_state["active_market_data"] = market_data
+        except Exception:
+            market_data = None
+
+    def _p4_grid() -> dict:
+        grid: dict = {}
+        if p4_buys:
+            grid["buy_pct_of_equity"] = [float(v) / 100.0 for v in p4_buys]
+        if p4_prios:
+            grid["entry_priority"] = list(p4_prios)
+        if p4_max.strip():
+            grid["max_pct_per_symbol"] = _parse_pct_list(p4_max)
+        if not grid:
+            grid = {"buy_pct_of_equity": [cfg.buy_pct_of_equity]}
+        return grid
+
+    try:
+        if run_tt:
+            cutoff, how = _resolve_phase4_cutoff(valid_trades, auto_70, cutoff_str)
+            out = run_train_vs_test(
+                valid_trades, cfg, cutoff=cutoff, market_data=market_data
+            )
+            st.session_state["last_phase4"] = {"kind": "train_test", "data": out, "how": how}
+
+        if run_oos:
+            cutoff, how = _resolve_phase4_cutoff(valid_trades, auto_70, cutoff_str)
+            out = run_locked_oos(
+                valid_trades,
+                cfg,
+                grid=_p4_grid(),
+                cutoff=cutoff,
+                market_data=market_data,
+            )
+            st.session_state["last_phase4"] = {"kind": "locked_oos", "data": out, "how": how}
+
+        if run_wf:
+            out = run_walk_forward(
+                valid_trades,
+                cfg,
+                train_years=float(wf_train),
+                test_years=float(wf_test),
+                step_years=float(wf_step),
+                mode=str(wf_mode),
+                grid=_p4_grid(),
+                market_data=market_data,
+            )
+            st.session_state["last_phase4"] = {"kind": "walk_forward", "data": out, "how": None}
+
+        if run_st:
+            cutoff, how = _resolve_phase4_cutoff(valid_trades, auto_70, cutoff_str)
+            out = run_stress_pack(
+                valid_trades,
+                cfg,
+                cutoff=cutoff,
+                use_test_set=True,
+                drop_symbol_from=str(drop_from),
+                market_data=market_data,
+            )
+            st.session_state["last_phase4"] = {"kind": "stress", "data": out, "how": how}
+    except Exception:
+        st.error("Phase 4 run failed. Details:")
+        st.code(traceback.format_exc())
+        return
+
+    payload = st.session_state.get("last_phase4")
+    if not payload:
+        return
+
+    kind = payload["kind"]
+    data = payload["data"]
+    how = payload.get("how")
+
+    if kind == "train_test":
+        st.markdown("#### Train vs Test")
+        st.caption(
+            f"Cutoff **{data['cutoff']}** ({how}). {data['split_rule']} "
+            f"n_train={data['n_train']}, n_test={data['n_test']}."
+        )
+        show = _phase4_metrics_table(data["side_by_side"])
+        prefer = [
+            "slice",
+            "n_trades",
+            "final_equity",
+            "return_pct",
+            "cagr",
+            "sharpe",
+            "max_drawdown",
+            "accepted",
+            "rejected",
+        ]
+        cols = [c for c in prefer if c in show.columns]
+        _df(show[cols])
+        deg = data.get("degradation") or {}
+        st.caption(
+            "Interpretation: compare Train vs Test on the **same** config. "
+            f"Δ return (Test−Train)={_metric_or_na(deg.get('delta_return_pct'), pct=True)}; "
+            f"Δ CAGR={_metric_or_na(deg.get('delta_cagr'), pct=True)}; "
+            f"Δ Sharpe={_metric_or_na(deg.get('delta_sharpe'))}; "
+            f"DD ratio |Test|/|Train|={_metric_or_na(deg.get('dd_ratio_test_over_train'))}."
+        )
+
+    elif kind == "locked_oos":
+        st.markdown("#### Locked OOS (grid on Train → once on Test)")
+        st.caption(
+            f"Cutoff **{data['cutoff']}** ({how}). Selection on Train only "
+            f"({data['selection_score']}). Best params: `{data['best_params']}`."
+        )
+        rows = [
+            {"slice": "Train (locked)", **data["train_metrics"]},
+            {"slice": "Test (locked)", **data["test_metrics"]},
+        ]
+        show = _phase4_metrics_table(rows)
+        prefer = [
+            "slice",
+            "final_equity",
+            "return_pct",
+            "cagr",
+            "sharpe",
+            "max_drawdown",
+            "accepted",
+            "rejected",
+            "buy_pct_of_equity",
+            "entry_priority",
+        ]
+        cols = [c for c in prefer if c in show.columns]
+        _df(show[cols])
+        deg = data.get("degradation") or {}
+        st.caption(
+            "Interpretation: params were **not** re-fit on Test. "
+            f"Δ return={_metric_or_na(deg.get('delta_return_pct'), pct=True)}; "
+            f"Δ CAGR={_metric_or_na(deg.get('delta_cagr'), pct=True)}; "
+            f"Δ Sharpe={_metric_or_na(deg.get('delta_sharpe'))}; "
+            f"DD ratio={_metric_or_na(deg.get('dd_ratio_test_over_train'))}. "
+            "Large negative Δ return / higher DD ratio ⇒ overfitting risk."
+        )
+        with st.expander("Train grid cells", expanded=False):
+            _df(_phase4_metrics_table(data.get("train_grid") or []))
+
+    elif kind == "walk_forward":
+        st.markdown("#### Walk-forward")
+        st.caption(
+            f"Mode **{data['mode']}**, train={data['train_years']}y / "
+            f"test={data['test_years']}y / step={data['step_years']}y. "
+            f"Span {data['min_buy']} → {data['max_buy']}. "
+            f"Windows={data['n_windows']} (evaluated {data['n_evaluated']})."
+        )
+        win_rows = []
+        for w in data.get("windows") or []:
+            flat = {k: v for k, v in w.items() if k != "degradation" and k != "best_params"}
+            bp = w.get("best_params") or {}
+            flat["best_buy_pct"] = bp.get("buy_pct_of_equity")
+            flat["best_priority"] = bp.get("entry_priority")
+            win_rows.append(flat)
+        show = _phase4_metrics_table(win_rows)
+        _df(show)
+        summ = data.get("oos_summary") or {}
+        st.caption(
+            f"Stitched OOS: avg Test return={_metric_or_na(summ.get('avg_test_return_pct'), pct=True)}; "
+            f"compound={_metric_or_na(summ.get('compound_test_return_pct'), pct=True)}. "
+            f"{summ.get('note', '')}"
+        )
+
+    elif kind == "stress":
+        st.markdown("#### Stress pack")
+        st.caption(
+            f"Eval set=**{data['eval_set']}** (cutoff {data.get('cutoff')}; {how}). "
+            f"Top symbol by net PnL on **{data['drop_symbol_from']}**: `{data.get('top_symbol')}`. "
+            f"{data.get('note', '')}"
+        )
+        show = _phase4_metrics_table(data.get("rows") or [])
+        prefer = [
+            "variant",
+            "dropped_symbol",
+            "final_equity",
+            "return_pct",
+            "cagr",
+            "sharpe",
+            "max_drawdown",
+            "delta_return_pct",
+            "delta_cagr",
+            "accepted",
+            "rejected",
+        ]
+        cols = [c for c in prefer if c in show.columns]
+        view = show[cols]
+        try:
+            st.dataframe(_style_stress(view), use_container_width=True)
+        except Exception:
+            _df(view)
+        st.caption(
+            "Interpretation: red Δ return = stress underperforms baseline on the eval set; "
+            "green = surprisingly better. costs×3 and partial-fills-off usually hurt; "
+            "dropping the top contributor tests concentration risk."
+        )
+
+
+
 def main() -> None:
-    st.set_page_config(page_title="MSBT 0.4", layout="wide")
-    st.title("Multi-Symbol Portfolio Backtester — 0.4")
+    st.set_page_config(page_title="MSBT 0.5", layout="wide")
+    st.title("Multi-Symbol Portfolio Backtester — 0.5")
     flash = st.session_state.pop("flash", None)
     if flash:
         st.success(flash)
@@ -642,6 +1040,7 @@ def main() -> None:
         "Event-based capital simulation using Return %. "
         "Optional daily MTM via market data (Yahoo). "
         "Phase 2.5 cash earn on uninvested cash (EOD after entries). "
+        "Phase 4 robustness: Train/Test, locked OOS, walk-forward, stress pack. "
         "Average trade return != portfolio return (sizing, overlap, cash, rejects)."
     )
 
@@ -679,6 +1078,9 @@ Symbol is taken from the filename. Extension `.csv` / `.xlsx` / `.xls` is option
         st.session_state.pop("last_single", None)
         st.session_state.pop("last_grid", None)
         st.session_state.pop("last_grid_config", None)
+        st.session_state.pop("last_phase4", None)
+        st.session_state.pop("active_config", None)
+        st.session_state.pop("active_enable_p2", None)
     st.session_state["source_hash"] = _source_hash(uploaded)
 
     all_trades = []
@@ -865,6 +1267,10 @@ Symbol is taken from the filename. Extension `.csv` / `.xlsx` / `.xls` is option
                     "(cache under data/market_cache or /tmp)."
                 )
 
+            st.session_state["active_config"] = config
+            st.session_state["active_enable_p2"] = bool(enable_p2)
+            st.session_state["active_market_data"] = market_data
+
             if run:
                 result = run_simulation(trades=valid, config=config, market_data=market_data)
                 result.validation_report = report.to_rows()
@@ -897,6 +1303,11 @@ Symbol is taken from the filename. Extension `.csv` / `.xlsx` / `.xls` is option
         except Exception:
             st.error("Simulation crashed. Details:")
             st.code(traceback.format_exc())
+
+    # Phase 4 uses baseline config from last form submit
+    valid_for_p4 = [t for t in all_trades if t.is_valid_for_sim]
+    if valid_for_p4:
+        _render_phase4_section(valid_for_p4, report)
 
     last = st.session_state.get("last_single")
     if last is not None:

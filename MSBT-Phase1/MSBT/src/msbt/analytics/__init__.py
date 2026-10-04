@@ -16,6 +16,14 @@ from msbt.analytics.stats import (
     compute_portfolio_stats,
     compute_trading_stats,
 )
+from msbt.analytics.mfe_mae import MfeMaeStats, compute_mfe_mae_stats
+from msbt.analytics.robustness import (
+    run_locked_oos,
+    run_stress_pack,
+    run_train_vs_test,
+    run_walk_forward,
+    split_by_buy_date,
+)
 
 __all__ = [
     "export_results_excel",
@@ -36,4 +44,11 @@ __all__ = [
     "PortfolioStats",
     "compute_trading_stats",
     "compute_portfolio_stats",
+    "MfeMaeStats",
+    "compute_mfe_mae_stats",
+    "run_train_vs_test",
+    "run_locked_oos",
+    "run_walk_forward",
+    "run_stress_pack",
+    "split_by_buy_date",
 ]

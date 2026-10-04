@@ -54,6 +54,10 @@ class TradeResult:
     valuation_notes: Optional[str] = None
     entry_signal: Optional[str] = None
     exit_signal: Optional[str] = None
+    mfe_pct: Optional[float] = None
+    mae_pct: Optional[float] = None
+    mfe_usd: Optional[float] = None
+    mae_usd: Optional[float] = None
 
     def to_dict(self) -> dict[str, Any]:
         d = {
@@ -99,6 +103,14 @@ class TradeResult:
                     "Valuation notes": self.valuation_notes,
                 }
             )
+        if self.mfe_pct is not None:
+            d["MFE %"] = self.mfe_pct
+        if self.mae_pct is not None:
+            d["MAE %"] = self.mae_pct
+        if self.mfe_usd is not None:
+            d["MFE USD"] = self.mfe_usd
+        if self.mae_usd is not None:
+            d["MAE USD"] = self.mae_usd
         return d
 
 
@@ -231,4 +243,5 @@ class SimulationResult:
     affected_dates: list[str] = field(default_factory=list)
     trading_stats: Optional[Any] = None
     portfolio_stats: Optional[Any] = None
+    mfe_mae_stats: Optional[Any] = None
     cash_earn_notes: Optional[str] = None

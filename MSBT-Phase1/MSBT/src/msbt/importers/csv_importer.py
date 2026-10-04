@@ -110,9 +110,28 @@ def _parse_return_raw(val) -> Optional[float]:
     return float(s)
 
 
+
 def percent_points_to_decimal(pct_points: float) -> float:
     """11.95 (percent points) → 0.1195 (decimal)."""
     return pct_points / 100.0
+
+
+def _first_non_null_float(entry, exit_, col: str) -> Optional[float]:
+    """First non-null numeric from Entry or Exit row for optional column."""
+    for row in (entry, exit_):
+        if col not in getattr(row, "index", []):
+            continue
+        v = row.get(col)
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            continue
+        try:
+            s = str(v).strip().replace("%", "").replace(",", "")
+            if not s or s in ("—", "-", "–"):
+                continue
+            return float(s)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def import_trade_file(
@@ -355,6 +374,23 @@ def import_trade_file(
         except Exception:
             pass
 
+        mfe_pct = None
+        mae_pct = None
+        mfe_usd = None
+        mae_usd = None
+        if "Favorable excursion %" in group.columns:
+            raw = _first_non_null_float(entry, exit_, "Favorable excursion %")
+            if raw is not None:
+                mfe_pct = percent_points_to_decimal(raw)
+        if "Adverse excursion %" in group.columns:
+            raw = _first_non_null_float(entry, exit_, "Adverse excursion %")
+            if raw is not None:
+                mae_pct = percent_points_to_decimal(raw)
+        if "Favorable excursion USD" in group.columns:
+            mfe_usd = _first_non_null_float(entry, exit_, "Favorable excursion USD")
+        if "Adverse excursion USD" in group.columns:
+            mae_usd = _first_non_null_float(entry, exit_, "Adverse excursion USD")
+
         tid = f"{prefix}-{trade_num_int}"
         if errors:
             status = TradeStatus.INVALID
@@ -404,6 +440,10 @@ def import_trade_file(
                 source_net_pnl_usd=net_pnl,
                 entry_signal=entry_signal,
                 exit_signal=exit_signal,
+                mfe_pct=mfe_pct,
+                mae_pct=mae_pct,
+                mfe_usd=mfe_usd,
+                mae_usd=mae_usd,
                 validation_errors=errors,
             )
         )

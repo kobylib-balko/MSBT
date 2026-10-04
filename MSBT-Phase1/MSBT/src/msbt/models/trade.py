@@ -34,6 +34,11 @@ class Trade:
     source_net_pnl_usd: Optional[float] = None
     entry_signal: Optional[str] = None
     exit_signal: Optional[str] = None
+    # Excursion analytics (decimal form; percent points in CSV / 100)
+    mfe_pct: Optional[float] = None  # Favorable excursion % → decimal
+    mae_pct: Optional[float] = None  # Adverse excursion % → decimal (usually ≤ 0)
+    mfe_usd: Optional[float] = None
+    mae_usd: Optional[float] = None
     validation_errors: list[str] = field(default_factory=list)
 
     @property

@@ -1,4 +1,4 @@
-# Multi-Symbol Portfolio Backtester (MSBT) — 0.4.0
+# Multi-Symbol Portfolio Backtester (MSBT) — 0.6.0
 
 Event-based portfolio simulation: upload multiple trade CSVs, normalize, and simulate a shared-cash portfolio with overlaps. Does **not** sum trade returns.
 
@@ -6,7 +6,9 @@ Event-based portfolio simulation: upload multiple trade CSVs, normalize, and sim
 **Phase 2:** optional `MarketDataProvider` (Yahoo via yfinance + disk cache, or synthetic fixtures) for daily MTM equity, open-position valuation, risk metrics (vol/Sharpe/Sortino/max DD), and optional benchmark.  
 **Phase 2.5:** cash earn on uninvested cash (`cash_earn_mode`: `none` | `synthetic_rf` | `symbol`). Synthetic RF builds a total-return index `I_t = I_{t-1}*(1+rate_t)^(1/365)`; **EOD cash after entries** is multiplied by `I_t/I_{prev}`. Closed-trade P&L is unchanged. Rates CSV: `data/synthetic_rf_rates.csv` or `cash_earn_rates_path`. Symbol mode is stubbed.  
 **Phase 3:** parameter-grid scenarios, SQLite run history, and TradingView ingestion hooks (interfaces only — no live webhook).  
-**UX (0.4):** richer trading/portfolio stats, benchmark comparison table, trade ledger signals, CAGR in results, defaults (fees/slippage, Yahoo on, open valuation `source`, benchmark `^GSPC`).
+**UX (0.4):** richer trading/portfolio stats, benchmark comparison table, trade ledger signals, CAGR in results, defaults (fees/slippage, Yahoo on, open valuation `source`, benchmark `^GSPC`).  
+**Phase 4 (0.5):** robustness on uploaded trades only — date-based Train/Test split, locked OOS after Train grid, walk-forward (expanding/rolling), and a stress pack (costs×3, partial fills off, cash earn none, drop top symbol). No new Yahoo/rate requirements.
+**Phase 5 (0.6):** MFE/MAE excursion panel after each single-run backtest — stats and plain-language recommendations from Favorable/Adverse excursion % on executed closed trades (research aids only; not auto-applied).
 
 ## Return % convention
 
@@ -119,6 +121,41 @@ print(map_strategy_names("Triple", {"triple": "TripleStrategy"}))
 
 History DB: `data/runs.sqlite` (or `/tmp/msbt_runs.sqlite` if the project data dir is not writable).
 
+
+## Phase 4 — Robustness
+
+Uses only uploaded / normalized trades (optional existing Phase 2 `market_data` / Phase 2.5 cash earn if already enabled).
+
+**Split rule:** Train = `buy_date < cutoff`; Test = `buy_date >= cutoff` (sell date ignored for membership). Default cutoff = median unique buy date, or auto ~70/30 by unique buy dates.
+
+**Locked OOS:** `run_parameter_grid` on Train only; best cell by robust score (`CAGR/|max_dd|` when DD available, else `return − |dd|`, else `return`); that config is evaluated **once** on Test (no re-fit).
+
+**Walk-forward:** user train/test/step years + expanding or rolling; per-window Train grid → locked Test; OOS summary = average and compounded Test returns.
+
+**Stress pack:** baseline vs costs×3, partial fills off, cash earn none (if on), drop top symbol by net PnL (ranked on Train or full sample).
+
+```python
+from msbt.analytics.robustness import (
+    run_train_vs_test,
+    run_locked_oos,
+    run_walk_forward,
+    run_stress_pack,
+    split_by_buy_date,
+)
+from datetime import date
+
+tt = run_train_vs_test(trades, config, cutoff=date(2020, 1, 1), market_data=None)
+oos = run_locked_oos(
+    trades, config,
+    grid={"buy_pct_of_equity": [0.05, 0.10]},
+    cutoff=date(2020, 1, 1),
+)
+wf = run_walk_forward(trades, config, train_years=4, test_years=1, step_years=1, mode="expanding")
+stress = run_stress_pack(trades, config, cutoff=date(2020, 1, 1), drop_symbol_from="train")
+```
+
+Streamlit: **Phase 4 — Robustness** section (after Configuration). Run a simulation once to lock the baseline config, then use the Phase 4 buttons.
+
 ## Locked economics
 
 - `equity_for_sizing` is frozen after exits and before entries on timestamp T
@@ -140,7 +177,7 @@ MSBT/
   src/msbt/
     importers/ validation/ models/ simulation/
     market_data/   # Phase 2 providers + cache
-    analytics/     # export, risk, benchmark, grid, history, stats
+    analytics/     # export, risk, benchmark, grid, history, stats, robustness
     cash_earn/     # Phase 2.5 synthetic RF rates + index
     ingestion/     # TradingView hooks (interfaces only)
     streamlit_app/
